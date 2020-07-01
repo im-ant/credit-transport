@@ -44,6 +44,7 @@ class LongArmsEnv(gym.Env):
 
     def __init__(self, corridor_length=5,
                  img_size=(32, 32), grayscale=True, flatten_obs=True,
+                 scale_observation=True,
                  dataset_path='./cifar_data_tmp/'):
 
         # ==
@@ -54,17 +55,18 @@ class LongArmsEnv(gym.Env):
         self.img_size = img_size
         self.grayscale = grayscale
         self.flatten_obs = flatten_obs
-
-        # ==
-        # Initialize spaces
-        self.action_space = spaces.Discrete(2)
-        self.observation_space = None  # TODO depends on image
+        self.scale_observation = scale_observation
 
         # ==
         # Get dataset of images
         dataset_tup = self._init_img_dataset(dataset_path)
         self.img_dict = dataset_tup[0]
         self.corridor_ds = dataset_tup[1]
+
+        # ==
+        # Initialize spaces
+        self.action_space = spaces.Discrete(2)
+        self.observation_space = self._init_obs_space()
 
         # ==
         # Initialize
@@ -148,9 +150,27 @@ class LongArmsEnv(gym.Env):
         :return: gym.spaces observation space
         """
 
-        # TODO THIS
+        # Get observation shape
+        example_obs = self._process_img(self.img_dict['initial'])
+        obs_shape = np.shape(example_obs)
 
-        pass
+        # Get range
+        if self.scale_observation:
+            obs_low = 0
+            obs_high = 1
+        else:
+            obs_low = 0
+            obs_high = 255
+
+        # Construct space
+        obs_space = spaces.Box(
+            low=obs_low,
+            high=obs_high,
+            shape=obs_shape,
+            dtype=np.float32
+        )
+
+        return obs_space
 
     def _process_img(self, img):
         """
@@ -170,12 +190,27 @@ class LongArmsEnv(gym.Env):
         # ==
         # Transform and output
         img = img_transforms(img)
+        obs = np.array(img, dtype=np.float32)
 
-        img = np.array(img)
+        # Ensure channel is in first dimension (torch conv standard)
+        if len(np.shape(obs)) == 2:
+            obs = np.expand_dims(obs, axis=0)
+        elif len(np.shape(obs)) == 3:
+            # PIL have channel on dim 2, swap with dim 0
+            obs = np.swapaxes(obs, 2, 0)
+            pass
+        else:
+            raise RuntimeError
+
+        # Scale values to [0, 1]
+        if self.scale_observation:
+            obs = obs / 255.0
+
+        # (Optinal) Flatten to vector
         if self.flatten_obs:
-            img = img.flatten()
+            obs = obs.flatten()
 
-        return img
+        return obs
 
     def step(self, action):
         """
@@ -198,7 +233,6 @@ class LongArmsEnv(gym.Env):
 
         # ==
         # Generate observation, reward and done
-        obs = None
         reward = 0.0
         done = False
 
@@ -255,17 +289,22 @@ if __name__ == '__main__':
     # FOR TESTING ONLY
     print('hello')
 
-    env = LongArmsEnv()
+    env = LongArmsEnv(corridor_length=500,
+                      img_size=(16, 16),
+                      grayscale=True,
+                      flatten_obs=True)
     print(env)
+    print(env.action_space)
+    print(env.observation_space)
 
-    obs = env.reset()
-    print(env.state, np.shape(obs), '[', np.min(obs), np.max(obs), ']')
+    cur_obs = env.reset()
+    print(env.state, np.shape(cur_obs), '[', np.min(cur_obs), np.max(cur_obs), ']')
 
     for step in range(10):
 
-        obs, reward, done, info = env.step(0)
+        cur_obs, reward, done, info = env.step(0)
 
-        print(env.state, np.shape(obs), '[', np.min(obs), np.max(obs), ']', reward, done)
+        print(env.state, np.shape(cur_obs), '[', np.min(cur_obs), np.max(cur_obs), ']', reward, done)
 
 
 
