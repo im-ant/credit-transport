@@ -11,9 +11,6 @@
 # ============================================================================
 
 import gym
-from gym import error, spaces, utils
-from gym.utils import seeding
-
 import numpy as np
 
 from torch.utils.data import DataLoader, Subset
@@ -28,11 +25,9 @@ class LongArmsEnv(gym.Env):
         rewards. The arm leads to a long hallway of partially observable
         timesteps before the reward is given.
 
-        NOTE for now there are only two arms.
+    Observation: image
 
-    Observation:
-
-    Actions:
+    Actions: 0, 1, ... up to (# arms - 1)
 
     States:
         Fully observable states describle by (arm #, arm steps), where (0,0)
@@ -65,13 +60,14 @@ class LongArmsEnv(gym.Env):
 
         # ==
         # Initialize spaces
-        self.action_space = spaces.Discrete(2)
+        self.action_space = gym.spaces.Discrete(2)
         self.observation_space = self._init_obs_space()
 
         # ==
         # Initialize
         # State = (arm #, arm steps)
         self.state = (0, 0)
+        self.prev_img = None
 
     def _init_img_dataset(self, dataset_path):
         """
@@ -163,7 +159,7 @@ class LongArmsEnv(gym.Env):
             obs_high = 255
 
         # Construct space
-        obs_space = spaces.Box(
+        obs_space = gym.spaces.Box(
             low=obs_low,
             high=obs_high,
             shape=obs_shape,
@@ -265,6 +261,7 @@ class LongArmsEnv(gym.Env):
         # Process image
         obs = self._process_img(img)
 
+        self.prev_img = img
         return obs, reward, done, {}
 
     def reset(self):
@@ -276,10 +273,17 @@ class LongArmsEnv(gym.Env):
         init_img = self.img_dict['initial']
         init_obs = self._process_img(init_img)
 
+        self.prev_img = init_img
         return init_obs
 
-    def render(self, mode='human'):
-        pass
+    def render(self):
+        """
+        Output a render-able RGB image
+        :return: np array , shape (C, H, W) in range [0, 255]
+        """
+        np_img = np.array(self.prev_img, dtype=np.uint8)
+        np_img = np.swapaxes(np_img, 0, 2)
+        return np_img
 
     def close(self):
         pass
@@ -289,8 +293,8 @@ if __name__ == '__main__':
     # FOR TESTING ONLY
     print('hello')
 
-    env = LongArmsEnv(corridor_length=500,
-                      img_size=(16, 16),
+    env = LongArmsEnv(corridor_length=6,
+                      img_size=(20, 20),
                       grayscale=True,
                       flatten_obs=True)
     print(env)
@@ -303,8 +307,10 @@ if __name__ == '__main__':
     for step in range(10):
 
         cur_obs, reward, done, info = env.step(0)
+        tmp_rend = env.render()
 
         print(env.state, np.shape(cur_obs), '[', np.min(cur_obs), np.max(cur_obs), ']', reward, done)
+        print('\t', np.shape(tmp_rend), np.min(tmp_rend), np.max(tmp_rend))
 
 
 
