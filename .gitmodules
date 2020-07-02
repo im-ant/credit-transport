@@ -1,0 +1,3 @@
+[submodule "src/ElectrophysRL"]
+	path = src/ElectrophysRL
+	url = https://github.com/im-ant/ElectrophysRL.git
