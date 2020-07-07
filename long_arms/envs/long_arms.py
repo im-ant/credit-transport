@@ -256,7 +256,9 @@ class LongArmsEnv(gym.Env):
 
         # If in the corridor states
         else:
-            img = next(iter(self.corridor_ds))[0]
+            # Randomly sample with replacement NOTE rng used here
+            rand_idx = np.random.randint(low=0, high=len(self.corridor_ds))
+            img = self.corridor_ds[rand_idx][0]
 
         # Process image
         obs = self._process_img(img)
@@ -297,20 +299,27 @@ if __name__ == '__main__':
                       img_size=(20, 20),
                       grayscale=True,
                       flatten_obs=True)
+
+    print('=== set-up ===')
     print(env)
     print(env.action_space)
     print(env.observation_space)
 
+    print('=== start ===')
     cur_obs = env.reset()
-    print(env.state, np.shape(cur_obs), '[', np.min(cur_obs), np.max(cur_obs), ']')
+    print(env.state, np.shape(cur_obs),
+          '[', np.mean(cur_obs), ']'
+          '(', np.min(cur_obs), np.max(cur_obs), ')')
 
     for step in range(10):
 
         cur_obs, reward, done, info = env.step(0)
         tmp_rend = env.render()
 
-        print(env.state, np.shape(cur_obs), '[', np.min(cur_obs), np.max(cur_obs), ']', reward, done)
-        print('\t', np.shape(tmp_rend), np.min(tmp_rend), np.max(tmp_rend))
+        print(env.state, np.shape(cur_obs),
+              '[', np.mean(cur_obs), ']',
+              '(', np.min(cur_obs), np.max(cur_obs), ')',
+              reward, done)
 
 
 
