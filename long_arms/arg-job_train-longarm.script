@@ -34,9 +34,9 @@ source $HOME/venvs/torchRL/bin/activate
 # (2) no data to copy
 
 # (3) launch job, (save model in $SLURM_TMPDIR??)
-python -um train.py --config_path $CONFIG_PATH \
-                    --log_dir $LOG_PATH \
-                    --tmpdir $TMP_DIR_PATH \
+python -u train.py --config_path $CONFIG_PATH \
+                   --log_dir $LOG_PATH \
+                   --tmpdir $TMP_DIR_PATH \
 
 # (4) Copy things over to scratch?
 # cp $EXP_LOG_PATH /network/tmp1/chenant/tmp/
