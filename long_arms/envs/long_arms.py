@@ -119,11 +119,18 @@ class LongArmsEnv(gym.Env):
         # ==
         # Pick an image sample for the init, final and each arm states
         # Each sample has format: (PIL.Image.Image, class #)
-        init_sample = ds[init_idxs[4]]
-        final_sample = ds[final_idxs[64]]
+
+        # Set the initial, final and corridor entrance observations
+        init_j = np.random.choice(init_idxs, replace=False)
+        init_sample = ds[init_j]
+        final_j = np.random.choice(final_idxs, replace=False)
+        final_sample = ds[final_j]
+
         arm_samples = []
-        for arm_j in range(self.num_arms):
-            cur_arm_sample = ds[arm_idxs[2 * arm_j]]
+        arm_js = np.random.choice(arm_idxs, size=self.num_arms,
+                                  replace=False)
+        for arm_j in arm_js:
+            cur_arm_sample = ds[arm_j]
             arm_samples.append(cur_arm_sample)
 
         # Save samples as PIL images
@@ -294,6 +301,10 @@ class LongArmsEnv(gym.Env):
 if __name__ == '__main__':
     # FOR TESTING ONLY
     print('hello')
+
+    seed = 4
+    print('numpy seed:', seed)
+    np.random.seed(seed)
 
     env = LongArmsEnv(corridor_length=6,
                       img_size=(20, 20),
