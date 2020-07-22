@@ -254,13 +254,13 @@ class R0D1(DQN):
             device=self.agent.device
         )
 
-        agent_slice = slice(0, valid_T)
+        agent_slice = slice(0, sample_T)
         agent_inputs = AgentInputs(
             observation=obs_tensor[agent_slice].clone().detach(),
             prev_action=prev_act_tensor[agent_slice].clone().detach(),
             prev_reward=prev_rew_tensor[agent_slice].clone().detach(),
         )
-        target_slice = slice(0, valid_T)
+        target_slice = slice(0, sample_T)
         target_inputs = AgentInputs(
             observation=obs_tensor[target_slice].clone().detach(),
             prev_action=prev_act_tensor[target_slice].clone().detach(),
@@ -268,9 +268,9 @@ class R0D1(DQN):
         )
 
         # Extract action, reward and done
-        action = samples.agent.action[0: valid_T]
-        reward = samples.env.reward[0: valid_T]
-        done = samples.env.done[0: valid_T]
+        action = samples.agent.action[0: sample_T]
+        reward = samples.env.reward[0: sample_T]
+        done = samples.env.done[0: sample_T]
 
         # ==
         # Compute the Q estimates
@@ -281,7 +281,7 @@ class R0D1(DQN):
         # Behavioural net Q estimate
         qs, _ = self.agent(*agent_inputs, init_rnn_state)  # [T,B,A]
         q = select_at_indexes(action, qs)
-        q = q[0:valid_T - 1]  # (T-1, 1), no prediction for terminal state
+        q = q[0:valid_T]  # (T, 1)
 
         # Target network Q estimates
         # NOTE: "target_q" is actually "next_q" (i.e. q estimate at next step)
@@ -294,16 +294,16 @@ class R0D1(DQN):
                 target_q = select_at_indexes(next_a, target_qs)
             else:
                 target_q = torch.max(target_qs, dim=-1).values
-            target_q = target_q[:valid_T]  # Make target q same length as q
+            target_q = target_q  # (Sample_T, 1)
 
         # ==
         # Compute lambda return values
         lambda_G = self.compute_lambda_return(reward, target_q,
-                                              done)  # (T-1, 1)
+                                              t_valid)  # (T, 1)
 
         # ==
         # Compute Losses
-        delta = lambda_G - q  # (T-1, 1)
+        delta = lambda_G - q  # (T, 1)
         losses = 0.5 * delta ** 2
         abs_delta = abs(delta)
 
@@ -324,23 +324,33 @@ class R0D1(DQN):
 
         return loss, td_abs_errors, priorities
 
-    def compute_lambda_return(self, r_traj, v_traj, d_traj):
+    def compute_lambda_return(self, r_traj, v_traj, valid):
         """
         Compute the lambda return. Assumes state at T is the terminate state
-        :param r_traj: reward trajectory, torch.tensor size (T, 1)
-        :param v_traj: value esti trajectory, torch.tensor size (T, 1)
-        :param d_traj: done trajectory, torch.tensor size (T, 1)
-        :return: G_traj: lambda return, torch.tensor size (T-1, 1)
+        NOTE ASSUMPTION: sample_T > valid_T
+        :param r_traj: reward traj, torch.tensor size (sample_T, 1)
+        :param v_traj: value esti traj, torch.tensor size (sample_T, 1)
+        :param valid: valid indicator, torch.tensor size (sample_T, 1)
+        :return: G_traj: lambda return, torch.tensor size (T, 1)
         """
         # Get trajectory length
-        traj_T = r_traj.size(0)
+        valid_T = int(torch.sum(valid).item())
+
+        valid_v_traj = (valid * v_traj)
 
         # TODO: implementing TD(0) for now, do lambda later
+        return_type = 'mc'  # [td0, mc]  # TODO remove later
+        if return_type == 'td0':
+            ret_G = (r_traj[0: valid_T] +
+                     (self.discount * valid_v_traj[1: valid_T+1]))
+        elif return_type == 'mc':
+            ret_G = r_traj[0: valid_T].clone().detach()
+            for t in reversed(range(1, valid_T)):
+                ret_G[t-1] = ret_G[t-1] + (self.discount * ret_G[t])
+        else:
+            raise NotImplementedError
 
-        valid_v_traj = (~d_traj) * v_traj  # (T, 1) , last element is 0
-        td0_G = r_traj + (self.discount * valid_v_traj)
-
-        return td0_G[1:traj_T]
+        return ret_G
 
     def buffer_loss(self, samples):
         """Samples have leading Time and Batch dimentions [T,B,..]. Move all
