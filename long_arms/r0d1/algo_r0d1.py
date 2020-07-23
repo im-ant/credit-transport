@@ -14,7 +14,10 @@ from rlpyt.algos.utils import valid_from_done, discount_return_n_step
 from rlpyt.utils.buffer import buffer_to, buffer_method, torchify_buffer
 
 # TODO: update this
-OptInfo = namedtuple("OptInfo", ["loss", "gradNorm", "tdAbsErr", "priority"])
+OptInfo = namedtuple("OptInfo", ["loss", "gradNorm",
+                                 "init_q_min", "init_q_max",
+                                 "final_q_min", "final_q_max",
+                                 "tdAbsErr", "priority"])
 
 SamplesToBufferRnn = namedarraytuple("SamplesToBufferRnn",
                                      SamplesToBuffer._fields + ("prev_rnn_state",))
@@ -34,6 +37,7 @@ class R0D1(DQN):
             self,
             discount=0.997,
             lambda_coef=1.0,
+            use_recurrence=True,
             batch_T=80,
             batch_B=64,
             warmup_T=40,
@@ -111,7 +115,7 @@ class R0D1(DQN):
         if samples is not None:
             # One training step
             self.optimizer.zero_grad()
-            loss, td_abs_errors, priorities = self.loss(samples)
+            loss, q_minmax, td_abs_errors, priorities = self.loss(samples)
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.agent.parameters(), self.clip_grad_norm)
@@ -120,6 +124,10 @@ class R0D1(DQN):
             # Logging information
             opt_info.loss.append(loss.item())
             opt_info.gradNorm.append(torch.tensor(grad_norm).item())  # backwards compatible
+            opt_info.init_q_min.append(q_minmax[0].item())  # q estimates
+            opt_info.init_q_max.append(q_minmax[1].item())
+            opt_info.final_q_min.append(q_minmax[2].item())
+            opt_info.final_q_max.append(q_minmax[3].item())
             opt_info.tdAbsErr.extend(td_abs_errors[::8].numpy())
             opt_info.priority.extend(priorities)
 
@@ -134,24 +142,50 @@ class R0D1(DQN):
     def loss(self, samples):
         """
         Compute TD loss for online samples
-        :param samples:
+        :param samples: a single online sample of shape [T, B, *]
         :return:
         """
         # Get the sequence length of the given sample
-        sample_T = samples.agent.action.size(0)
+        sample_T = samples.env.observation.size(0)
+        sample_B = samples.env.observation.size(1)
+
         # Get valid sequence (including the first terminal state)
-        t_valid = valid_from_done(samples.env.done[0:])
-        valid_T = int(torch.sum(t_valid).item())
+        valid = valid_from_done(samples.env.done[0:])
+        valid_T = int(torch.sum(valid).item())
 
         # ==
-        # Create the input to the behaviour and target networks
-        # NOTE: both networks take the previous action and rewards as LSTM
-        #       input. May want to set those to zero.
+        # Extract individual tensors from the sample, shape (T, B, *)
+
+        # Input for LSTM
+        # NOTE TODO: both networks take the previous action and rewards as
+        #            LSTM input. May want to set these to zero.
         obs_tensor, prev_act_tensor, prev_rew_tensor = buffer_to(
             (samples.env.observation, samples.agent.prev_action,
              samples.env.prev_reward),
             device=self.agent.device
         )
+
+        # Extract action, reward and done (on CPU)
+        action = samples.agent.action[0: sample_T]
+        reward = samples.env.reward[0: sample_T]
+
+        # ==
+        # Put everything on the batch dimension if not using recurrence
+        if not self.use_recurrence:
+            sample_T = 1
+            sample_B = sample_B * sample_T
+
+            obs_tensor = obs_tensor.view(1, -1, *(obs_tensor.size()[2:]))
+            prev_act_tensor = prev_act_tensor.\
+                view(1, -1, *(prev_act_tensor.size()[2:]))
+            prev_rew_tensor = prev_rew_tensor.\
+                view(1, -1, *(prev_rew_tensor.size()[2:]))
+
+            action = action.view(1, -1, *(action.size()[2:]))
+
+        # ==
+        # Compute the Q estimates
+        # NOTE: no RNN warm-up unlike R2D1 / R2D2
 
         agent_slice = slice(0, sample_T)
         agent_inputs = AgentInputs(
@@ -166,21 +200,16 @@ class R0D1(DQN):
             prev_reward=prev_rew_tensor[target_slice].clone().detach(),
         )
 
-        # Extract action, reward and done
-        action = samples.agent.action[0: sample_T]
-        reward = samples.env.reward[0: sample_T]
-        done = samples.env.done[0: sample_T]
-
-        # ==
-        # Compute the Q estimates
-        # NOTE: no RNN warm-up unlike R2D1 / R2D2
         init_rnn_state = None
         target_rnn_state = None
 
         # Behavioural net Q estimate
         qs, _ = self.agent(*agent_inputs, init_rnn_state)  # [T,B,A]
         q = select_at_indexes(action, qs)
-        q = q[0:valid_T]  # (T, 1)
+        if self.use_recurrence:
+            q = q[0:valid_T]  # (T, 1)  NOTE really only works for non-batch data
+        else:
+            q = q[:, 0:valid_T]  # (1, T)
 
         # Target network Q estimates
         # NOTE: "target_q" is actually "next_q" (i.e. q estimate at next step)
@@ -193,16 +222,21 @@ class R0D1(DQN):
                 target_q = select_at_indexes(next_a, target_qs)
             else:
                 target_q = torch.max(target_qs, dim=-1).values
-            target_q = target_q  # (Sample_T, 1)
+            target_q = target_q  # (sample_T, sample_B)
 
         # ==
         # Compute lambda return values
+        if not self.use_recurrence:
+            target_q.transpose_(0, 1)
         lambda_G = self.compute_lambda_return(reward, target_q,
-                                              t_valid)  # (T, 1)
+                                              valid)  # (T, 1)
+        if not self.use_recurrence:
+            target_q.transpose_(0, 1)
+            lambda_G = torch.transpose(lambda_G, 0, 1)
 
         # ==
         # Compute Losses
-        delta = lambda_G - q  # (T, 1)
+        delta = lambda_G - q
         losses = 0.5 * delta ** 2
         abs_delta = abs(delta)
 
@@ -217,11 +251,24 @@ class R0D1(DQN):
         if self.delta_clip is not None:
             td_abs_errors = torch.clamp(td_abs_errors, 0, self.delta_clip)  # [T,B]
 
-        max_d = torch.max(td_abs_errors, dim=0).values
+        # Estimate priorities? NOTE DEPRECATED NOT USED
+        max_d = torch.max(td_abs_errors, dim=0).values  # NOTE: wrong dim with no recurrence
         mean_d = torch.mean(td_abs_errors, dim=0)
         priorities = self.pri_eta * max_d + (1 - self.pri_eta) * mean_d  # [B]
 
-        return loss, td_abs_errors, priorities
+        # Store the q estimates
+        qs_tensor = qs.clone().detach()  # [sample_T, sample_B, A]
+        if not self.use_recurrence:
+            qs_tensor.tranpose_(0, 1)  # in place transpose
+        qs_tensor = qs_tensor[0:valid_T, :, :]  # (valid_T, sample_B, A)
+
+        init_q_min, init_q_max = (torch.min(qs_tensor[0]),
+                                  torch.max(qs_tensor[0]))
+        final_q_min, final_q_max = (torch.min(qs_tensor[-1]),
+                                    torch.max(qs_tensor[-1]))
+        q_minmax = (init_q_min, init_q_max, final_q_min, final_q_max)
+
+        return loss, q_minmax, td_abs_errors, priorities
 
     def compute_lambda_return(self, r_traj, v_traj, valid):
         """
@@ -232,6 +279,9 @@ class R0D1(DQN):
         :param valid: valid indicator, torch.tensor size (sample_T, 1)
         :return: G_traj: lambda return, torch.tensor size (T, 1)
         """
+
+        # TODO: update this to work with batches
+
         # Get trajectory length
         valid_T = int(torch.sum(valid).item())
 
