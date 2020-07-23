@@ -23,14 +23,17 @@ PrioritiesSamplesToBuffer = namedarraytuple("PrioritiesSamplesToBuffer",
 
 
 class R0D1(DQN):
-    """Recurrent-replay DQN with options for: Double-DQN, Dueling Architecture,
-    n-step returns, prioritized_replay."""
+    """
+    DEPRECATED COMMENT: Recurrent-replay DQN with options for: Double-DQN,
+    Dueling Architecture, n-step returns, prioritized_replay.
+    """
 
     opt_info_fields = tuple(f for f in OptInfo._fields)  # copy
 
     def __init__(
             self,
             discount=0.997,
+            lambda_coef=1.0,
             batch_T=80,
             batch_B=64,
             warmup_T=40,
@@ -65,15 +68,20 @@ class R0D1(DQN):
             ReplayBufferCls=None,  # leave None to select by above options
             updates_per_sync=1,  # For async mode only.
     ):
-        """Saves input arguments.
-
-        Args:
-            store_rnn_state_interval (int): store RNN state only once this many steps, to reduce memory usage; replay sequences will only begin at the steps with stored recurrent state.
-        
-        Note:
-            Typically ran with ``store_rnn_state_interval`` equal to the sampler's ``batch_T``, 40.  Then every 40 steps
-            can be the beginning of a replay sequence, and will be guaranteed to start with a valid RNN state.  Only reset
-            the RNN state (and env) at the end of the sampler batch, so that the beginnings of episodes are trained on.
+        """
+        :param discount:
+        :param lambda_coef: lambda return coefficient
+        :param delta_clip:
+        :param target_update_interval:
+        :param learning_rate:
+        :param OptimCls:
+        :param optim_kwargs:
+        :param initial_optim_state_dict:
+        :param clip_grad_norm:
+        :param eps_steps:
+        :param double_dqn:
+        :param value_scale_eps:
+        :param ReplayBufferCls:
         """
         if optim_kwargs is None:
             optim_kwargs = dict(eps=1e-3)  # Assumes Adam.
@@ -83,40 +91,6 @@ class R0D1(DQN):
             input_priority_shift = warmup_T // store_rnn_state_interval
         save__init__args(locals())
         self._batch_size = (self.batch_T + self.warmup_T) * self.batch_B
-
-    def initialize_replay_buffer(self, examples, batch_spec, async_=False):
-        """Similar to DQN but uses replay buffers which return sequences, and
-        stores the agent's recurrent state."""
-        example_to_buffer = SamplesToBuffer(
-            observation=examples["observation"],
-            action=examples["action"],
-            reward=examples["reward"],
-            done=examples["done"],
-        )
-        if self.store_rnn_state_interval > 0:
-            example_to_buffer = SamplesToBufferRnn(*example_to_buffer,
-                                                   prev_rnn_state=examples["agent_info"].prev_rnn_state,
-                                                   )
-        replay_kwargs = dict(
-            example=example_to_buffer,
-            size=self.replay_size,
-            B=batch_spec.B,
-            discount=self.discount,
-            n_step_return=self.n_step_return,
-            rnn_state_interval=self.store_rnn_state_interval,
-            # batch_T fixed for prioritized, (relax if rnn_state_interval=1 or 0).
-            batch_T=self.batch_T + self.warmup_T,
-        )
-
-        ReplayCls = UniformSequenceReplayFrameBuffer  # NOTE: removed complexity
-
-        if self.ReplayBufferCls is not None:
-            ReplayCls = self.ReplayBufferCls
-            logger.log(f"WARNING: ignoring internal selection logic and using"
-                       f" input replay buffer class: {ReplayCls} -- compatibility not"
-                       " guaranteed.")
-        self.replay_buffer = ReplayCls(**replay_kwargs)
-        return self.replay_buffer
 
     def optimize_agent(self, itr, samples=None, sampler_itr=None):
         """
@@ -135,7 +109,6 @@ class R0D1(DQN):
         # ==
         # Train
         if samples is not None:
-
             # One training step
             self.optimizer.zero_grad()
             loss, td_abs_errors, priorities = self.loss(samples)
@@ -157,80 +130,6 @@ class R0D1(DQN):
         self.update_itr_hyperparams(itr)
 
         return opt_info
-
-    def samples_to_buffer(self, samples):
-        samples_to_buffer = super().samples_to_buffer(samples)
-        if self.store_rnn_state_interval > 0:
-            samples_to_buffer = SamplesToBufferRnn(*samples_to_buffer,
-                                                   prev_rnn_state=samples.agent.agent_info.prev_rnn_state)
-        if self.input_priorities:
-            priorities = self.compute_input_priorities(samples)
-            samples_to_buffer = PrioritiesSamplesToBuffer(
-                priorities=priorities, samples=samples_to_buffer)
-        return samples_to_buffer
-
-    def compute_input_priorities(self, samples):
-        """Used when putting new samples into the replay buffer.  Computes
-        n-step TD-errors using recorded Q-values from online network and
-        value scaling.  Weights the max and the mean TD-error over each sequence
-        to make a single priority value for that sequence.
-
-        Note:
-            Although the original R2D2 implementation used the entire
-            80-step sequence to compute the input priorities, we ran R2D1 with 40
-            time-step sample batches, and so computed the priority for each
-            80-step training sequence based on one of the two 40-step halves.
-            Algorithm argument ``input_priority_shift`` determines which 40-step
-            half is used as the priority for the 80-step sequence.  (Since this
-            method might get executed by alternating memory copiers in async mode,
-            don't carry internal state here, do all computation with only the samples
-            available in input.  Could probably reduce to one memory copier and keep
-            state there, if needed.)
-        """
-
-        # """Just for first input into replay buffer.
-        # Simple 1-step return TD-errors using recorded Q-values from online
-        # network and value scaling, with the T dimension reduced away (same
-        # priority applied to all samples in this batch; whereever the rnn state
-        # is kept--hopefully the first step--this priority will apply there).
-        # The samples duration T might be less than the training segment, so
-        # this is an approximation of an approximation, but hopefully will
-        # capture the right behavior.
-        # UPDATE 20190826: Trying using n-step returns.  For now using samples
-        # with full n-step return available...later could also use partial
-        # returns for samples at end of batch.  35/40 ain't bad tho.
-        # Might not carry/use internal state here, because might get executed
-        # by alternating memory copiers in async mode; do all with only the
-        # samples avialable from input."""
-        samples = torchify_buffer(samples)
-        q = samples.agent.agent_info.q
-        action = samples.agent.action
-        q_max = torch.max(q, dim=-1).values
-        q_at_a = select_at_indexes(action, q)
-        return_n, done_n = discount_return_n_step(
-            reward=samples.env.reward,
-            done=samples.env.done,
-            n_step=self.n_step_return,
-            discount=self.discount,
-            do_truncated=False,  # Only samples with full n-step return.
-        )
-        # y = self.value_scale(
-        #     samples.env.reward[:-1] +
-        #     (self.discount * (1 - samples.env.done[:-1].float()) *  # probably done.float()
-        #         self.inv_value_scale(q_max[1:]))
-        # )
-        nm1 = max(1, self.n_step_return - 1)  # At least 1 bc don't have next Q.
-        y = self.value_scale(return_n +
-                             (1 - done_n.float()) * self.inv_value_scale(q_max[nm1:]))
-        delta = abs(q_at_a[:-nm1] - y)
-        # NOTE: by default, with R2D1, use squared-error loss, delta_clip=None.
-        if self.delta_clip is not None:  # Huber loss.
-            delta = torch.clamp(delta, 0, self.delta_clip)
-        valid = valid_from_done(samples.env.done[:-nm1])
-        max_d = torch.max(delta * valid, dim=0).values
-        mean_d = valid_mean(delta, valid, dim=0)  # Still high if less valid.
-        priorities = self.pri_eta * max_d + (1 - self.pri_eta) * mean_d  # [B]
-        return priorities.numpy()
 
     def loss(self, samples):
         """
@@ -338,19 +237,133 @@ class R0D1(DQN):
 
         valid_v_traj = (valid * v_traj)
 
-        # TODO: implementing TD(0) for now, do lambda later
-        return_type = 'mc'  # [td0, mc]  # TODO remove later
-        if return_type == 'td0':
+        # TODO: implementing TD(0) and MC for now, do lambda later
+
+        # lambda == 0 -> TD(0)
+        if self.lambda_coef == 0.0:
             ret_G = (r_traj[0: valid_T] +
-                     (self.discount * valid_v_traj[1: valid_T+1]))
-        elif return_type == 'mc':
+                     (self.discount * valid_v_traj[1: valid_T + 1]))
+        # lambda == 1 -> monte carlo
+        elif self.lambda_coef == 1.0:
             ret_G = r_traj[0: valid_T].clone().detach()
             for t in reversed(range(1, valid_T)):
-                ret_G[t-1] = ret_G[t-1] + (self.discount * ret_G[t])
+                ret_G[t - 1] = ret_G[t - 1] + (self.discount * ret_G[t])
         else:
             raise NotImplementedError
 
         return ret_G
+
+    # ==
+    # Below is old code
+    # ==
+
+    def initialize_replay_buffer(self, examples, batch_spec, async_=False):
+        """Similar to DQN but uses replay buffers which return sequences, and
+        stores the agent's recurrent state."""
+        example_to_buffer = SamplesToBuffer(
+            observation=examples["observation"],
+            action=examples["action"],
+            reward=examples["reward"],
+            done=examples["done"],
+        )
+        if self.store_rnn_state_interval > 0:
+            example_to_buffer = SamplesToBufferRnn(*example_to_buffer,
+                                                   prev_rnn_state=examples["agent_info"].prev_rnn_state,
+                                                   )
+        replay_kwargs = dict(
+            example=example_to_buffer,
+            size=self.replay_size,
+            B=batch_spec.B,
+            discount=self.discount,
+            n_step_return=self.n_step_return,
+            rnn_state_interval=self.store_rnn_state_interval,
+            # batch_T fixed for prioritized, (relax if rnn_state_interval=1 or 0).
+            batch_T=self.batch_T + self.warmup_T,
+        )
+
+        ReplayCls = UniformSequenceReplayFrameBuffer  # NOTE: removed complexity
+
+        if self.ReplayBufferCls is not None:
+            ReplayCls = self.ReplayBufferCls
+            logger.log(f"WARNING: ignoring internal selection logic and using"
+                       f" input replay buffer class: {ReplayCls} -- compatibility not"
+                       " guaranteed.")
+        self.replay_buffer = ReplayCls(**replay_kwargs)
+        return self.replay_buffer
+
+    def samples_to_buffer(self, samples):
+        samples_to_buffer = super().samples_to_buffer(samples)
+        if self.store_rnn_state_interval > 0:
+            samples_to_buffer = SamplesToBufferRnn(*samples_to_buffer,
+                                                   prev_rnn_state=samples.agent.agent_info.prev_rnn_state)
+        if self.input_priorities:
+            priorities = self.compute_input_priorities(samples)
+            samples_to_buffer = PrioritiesSamplesToBuffer(
+                priorities=priorities, samples=samples_to_buffer)
+        return samples_to_buffer
+
+    def compute_input_priorities(self, samples):
+        """Used when putting new samples into the replay buffer.  Computes
+        n-step TD-errors using recorded Q-values from online network and
+        value scaling.  Weights the max and the mean TD-error over each sequence
+        to make a single priority value for that sequence.
+
+        Note:
+            Although the original R2D2 implementation used the entire
+            80-step sequence to compute the input priorities, we ran R2D1 with 40
+            time-step sample batches, and so computed the priority for each
+            80-step training sequence based on one of the two 40-step halves.
+            Algorithm argument ``input_priority_shift`` determines which 40-step
+            half is used as the priority for the 80-step sequence.  (Since this
+            method might get executed by alternating memory copiers in async mode,
+            don't carry internal state here, do all computation with only the samples
+            available in input.  Could probably reduce to one memory copier and keep
+            state there, if needed.)
+        """
+
+        # """Just for first input into replay buffer.
+        # Simple 1-step return TD-errors using recorded Q-values from online
+        # network and value scaling, with the T dimension reduced away (same
+        # priority applied to all samples in this batch; whereever the rnn state
+        # is kept--hopefully the first step--this priority will apply there).
+        # The samples duration T might be less than the training segment, so
+        # this is an approximation of an approximation, but hopefully will
+        # capture the right behavior.
+        # UPDATE 20190826: Trying using n-step returns.  For now using samples
+        # with full n-step return available...later could also use partial
+        # returns for samples at end of batch.  35/40 ain't bad tho.
+        # Might not carry/use internal state here, because might get executed
+        # by alternating memory copiers in async mode; do all with only the
+        # samples avialable from input."""
+        samples = torchify_buffer(samples)
+        q = samples.agent.agent_info.q
+        action = samples.agent.action
+        q_max = torch.max(q, dim=-1).values
+        q_at_a = select_at_indexes(action, q)
+        return_n, done_n = discount_return_n_step(
+            reward=samples.env.reward,
+            done=samples.env.done,
+            n_step=self.n_step_return,
+            discount=self.discount,
+            do_truncated=False,  # Only samples with full n-step return.
+        )
+        # y = self.value_scale(
+        #     samples.env.reward[:-1] +
+        #     (self.discount * (1 - samples.env.done[:-1].float()) *  # probably done.float()
+        #         self.inv_value_scale(q_max[1:]))
+        # )
+        nm1 = max(1, self.n_step_return - 1)  # At least 1 bc don't have next Q.
+        y = self.value_scale(return_n +
+                             (1 - done_n.float()) * self.inv_value_scale(q_max[nm1:]))
+        delta = abs(q_at_a[:-nm1] - y)
+        # NOTE: by default, with R2D1, use squared-error loss, delta_clip=None.
+        if self.delta_clip is not None:  # Huber loss.
+            delta = torch.clamp(delta, 0, self.delta_clip)
+        valid = valid_from_done(samples.env.done[:-nm1])
+        max_d = torch.max(delta * valid, dim=0).values
+        mean_d = valid_mean(delta, valid, dim=0)  # Still high if less valid.
+        priorities = self.pri_eta * max_d + (1 - self.pri_eta) * mean_d  # [B]
+        return priorities.numpy()
 
     def buffer_loss(self, samples):
         """Samples have leading Time and Batch dimentions [T,B,..]. Move all
