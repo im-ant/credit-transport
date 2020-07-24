@@ -135,7 +135,9 @@ class R0D1(DQN):
             self.update_counter += 1
             if self.update_counter % self.target_update_interval == 0:
                 self.agent.update_target()
-        self.update_itr_hyperparams(itr)
+
+        # NOTE: only required for prioritized replay I think?
+        # self.update_itr_hyperparams(itr)
 
         return opt_info
 
