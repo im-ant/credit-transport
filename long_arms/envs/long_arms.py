@@ -35,17 +35,27 @@ class LongArmsEnv(gym.Env):
         agent is twp states into the 1st arm. The agent receives image
         observations.
 
+    If require_final_action = True, then the agent needs to take the same
+    action at the post-corridor state as the initial state to transition
+    to arm 1 and receive reward +1, else it will transition to arm 2 and
+    receive ward -1.
+    If require_final_action = False, then the agent will receive
+    +1 for going into the first corridor (action = 0), -1 for the second
+    corridor (action = 1), and +0 for all other corridors.
     """
 
-    def __init__(self, corridor_length=5,
-                 img_size=(32, 32), grayscale=True, flatten_obs=True,
+    def __init__(self, num_arms=2, corridor_length=5,
+                 require_final_action=False,
+                 img_size=(32, 32), grayscale=True,
+                 flatten_obs=True,
                  scale_observation=True,
                  dataset_path='./cifar_data_tmp/'):
 
         # ==
         # Attributes
         self.corridor_length = corridor_length
-        self.num_arms = 2
+        self.num_arms = num_arms
+        self.require_final_action = require_final_action
 
         self.img_size = img_size
         self.grayscale = grayscale
@@ -60,7 +70,7 @@ class LongArmsEnv(gym.Env):
 
         # ==
         # Initialize spaces
-        self.action_space = gym.spaces.Discrete(2)
+        self.action_space = gym.spaces.Discrete(self.num_arms)
         self.observation_space = self._init_obs_space()
 
         # ==
@@ -230,7 +240,15 @@ class LongArmsEnv(gym.Env):
         if cur_arm == 0:
             self.state = ((action + 1), 1)
         elif cur_step >= (self.corridor_length + 3):
+            # In terminal state so just stay
             pass
+        elif (self.require_final_action and
+              (cur_step == (self.corridor_length + 2))):
+            # Post-corridor optional transition
+            if cur_arm == (action+1):
+                self.state = (1, cur_step + 1)
+            else:
+                self.state = (2, cur_step + 1)
         else:
             self.state = (cur_arm, cur_step + 1)
 
@@ -302,11 +320,13 @@ if __name__ == '__main__':
     # FOR TESTING ONLY
     print('hello')
 
-    seed = 4
+    seed = 5
     print('numpy seed:', seed)
     np.random.seed(seed)
 
-    env = LongArmsEnv(corridor_length=6,
+    env = LongArmsEnv(num_arms=3,
+                      corridor_length=5,
+                      require_final_action=True,
                       img_size=(20, 20),
                       grayscale=True,
                       flatten_obs=True)
@@ -323,11 +343,11 @@ if __name__ == '__main__':
           '(', np.min(cur_obs), np.max(cur_obs), ')')
 
     for step in range(10):
-
-        cur_obs, reward, done, info = env.step(0)
+        action = env.action_space.sample()
+        cur_obs, reward, done, info = env.step(action)
         tmp_rend = env.render()
 
-        print(env.state, np.shape(cur_obs),
+        print(action, env.state, np.shape(cur_obs),
               '[', np.mean(cur_obs), ']',
               '(', np.min(cur_obs), np.max(cur_obs), ')',
               reward, done)
