@@ -261,7 +261,7 @@ class R0D1(DQN):
         # Store the q estimates
         qs_tensor = qs.clone().detach()  # [sample_T, sample_B, A]
         if not self.use_recurrence:
-            qs_tensor.tranpose_(0, 1)  # in place transpose
+            qs_tensor = torch.transpose(qs_tensor, 0, 1)
         qs_tensor = qs_tensor[0:valid_T, :, :]  # (valid_T, sample_B, A)
 
         init_q_min, init_q_max = (torch.min(qs_tensor[0]),
