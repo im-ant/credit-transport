@@ -56,7 +56,9 @@ def build_and_train(config: configparser.ConfigParser,
     img_len = config['Env'].getint('img_len')  # side length of the cifar img
     corridor_len = config['Env'].getint('corridor_length')
     env_args = {
+        'num_arms': config['Env'].getint('num_arms'),
         'corridor_length': corridor_len,
+        'require_final_action': config['Env'].getboolean('require_final_action'),
         'img_size': (img_len, img_len),
         'grayscale': config['Env'].getboolean('grayscale'),
         'flatten_obs': config['Env'].getboolean('flatten_obs'),
@@ -155,7 +157,7 @@ if __name__ == "__main__":
     # Configuration file
     parser.add_argument(
         '--config_path', type=str,
-        default='/home/mila/c/chenant/repos/credit-transport/long_arms/default_config.ini',
+        default='/home/mila/c/chenant/repos/credit-transport/long_arms/r0d1/default_config.ini',
         help='path to the agent configuration .ini file'
     )
     # Logger parent path
@@ -195,21 +197,3 @@ if __name__ == "__main__":
         n_parallel=1,
         log_dir=args.log_dir,
     )
-
-
-
-    """
-    
-    usual dir:
-    log_dir = "/home/mila/c/chenant/repos/credit-transport/long_arms/tmp_log"
-
-    parser.add_argument('--run_ID', help='run identifier (logging)', type=int, default=0)
-    parser.add_argument('--cuda_idx', help='gpu to use ', type=int, default=None)
-    parser.add_argument('--n_parallel', help='number of sampler workers', type=int, default=1)
-    args = parser.parse_args()
-    build_and_train(
-        run_ID=args.run_ID,
-        cuda_idx=args.cuda_idx,
-        n_parallel=args.n_parallel,
-    )
-    """
