@@ -37,7 +37,7 @@ class LogicalArmsEnv(gym.Env):
                  grayscale=True,
                  flatten_obs=False,
                  scale_observation=False,
-                 training_data=True,
+                 training=True,
                  dataset_path='./cifar_data_tmp/'):
 
         # ==
@@ -51,7 +51,7 @@ class LogicalArmsEnv(gym.Env):
         self.flatten_obs = flatten_obs
         self.scale_observation = scale_observation
 
-        self.training_data = training_data
+        self.training = training
 
         # ==
         # Get dataset of images
@@ -92,7 +92,7 @@ class LogicalArmsEnv(gym.Env):
 
         # ==
         # Download / initialize dataset
-        ds = CIFAR10(dataset_path, train=self.training_data,
+        ds = CIFAR10(dataset_path, train=self.training,
                      download=True)
 
         # ==
