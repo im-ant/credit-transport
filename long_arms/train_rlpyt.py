@@ -33,12 +33,13 @@ from rlpyt.models.dqn.atari_dqn_model import AtariDqnModel
 from rlpyt.runners.minibatch_rl import MinibatchRl, MinibatchRlEval
 from rlpyt.utils.logging.context import logger_context
 
-from envs.long_arms import LongArmsEnv
 from r0d1.algo_r0d1 import R0D1
+from envs.long_arms import LongArmsEnv
+from envs.logical_arms import LogicalArmsEnv
 
 
 def env_f(**kwargs):
-    return GymEnvWrapper(LongArmsEnv(**kwargs))
+    return GymEnvWrapper(LogicalArmsEnv(**kwargs))
 
 
 def build_and_train(config: configparser.ConfigParser,
@@ -58,6 +59,7 @@ def build_and_train(config: configparser.ConfigParser,
     env_args = {
         'num_arms': config['Env'].getint('num_arms'),
         'corridor_length': corridor_len,
+        'final_obs_aliased': config['Env'].getboolean('final_obs_aliased'),
         'require_final_action': config['Env'].getboolean('require_final_action'),
         'img_size': (img_len, img_len),
         'grayscale': config['Env'].getboolean('grayscale'),
@@ -65,6 +67,10 @@ def build_and_train(config: configparser.ConfigParser,
         'scale_observation': config['Env'].getboolean('scale_observation'),
         'dataset_path': config['Env']['dataset_path']
     }
+    train_env_args = {k: env_args[k] for k in env_args}  # 1-depth copying
+    train_env_args['training'] = True
+    eval_env_args = {k: env_args[k] for k in env_args}
+    eval_env_args['training'] = False  # NOTE: so far these are just dummies
 
     # =====
     # Set up algorithm
@@ -113,7 +119,7 @@ def build_and_train(config: configparser.ConfigParser,
         TrajInfoCls=TrajInfo,  # collect default trajectory info
         CollectorCls=CpuWaitResetCollector,  # each batch only has at most 1 episode
         env_kwargs=env_args,
-        batch_T=(corridor_len + 3 + 2),  # seq length of per batch of sampled data
+        batch_T=config['Training'].getint('sampler_batch_T'),  # seq length of per batch of sampled data
         batch_B=1,
         max_decorrelation_steps=0,
         eval_env_kwargs=env_args,  # eval stuff, don't think it is used
@@ -125,7 +131,9 @@ def build_and_train(config: configparser.ConfigParser,
     # ==========
     # Initialize algorithm, agent and model
     algo = R0D1(**algo_kwargs)
-    agent = R2d1Agent(ModelCls=AtariR2d1Model,
+    agent = R2d1Agent(eps_init=config['Algorithm'].getfloat('eps_init'),
+                      eps_final=config['Algorithm'].getfloat('eps_final'),
+                      ModelCls=AtariR2d1Model,
                       model_kwargs=model_kwargs)
 
     # ==========
