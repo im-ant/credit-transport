@@ -7,7 +7,8 @@ from rlpyt.utils.quick_args import save__init__args
 from rlpyt.utils.logging import logger
 from rlpyt.utils.collections import namedarraytuple
 from rlpyt.replays.sequence.frame import (UniformSequenceReplayFrameBuffer,
-                                          PrioritizedSequenceReplayFrameBuffer, AsyncUniformSequenceReplayFrameBuffer,
+                                          PrioritizedSequenceReplayFrameBuffer,
+                                          AsyncUniformSequenceReplayFrameBuffer,
                                           AsyncPrioritizedSequenceReplayFrameBuffer)
 from rlpyt.utils.tensor import select_at_indexes, valid_mean
 from rlpyt.algos.utils import valid_from_done, discount_return_n_step
@@ -16,6 +17,7 @@ from rlpyt.utils.buffer import buffer_to, buffer_method, torchify_buffer
 # TODO: update this
 OptInfo = namedtuple("OptInfo", ["loss", "gradNorm",
                                  "init_q_min", "init_q_max",
+                                 "t3_q_min", "t3_q_max",
                                  "final_q_min", "final_q_max",
                                  "tdAbsErr", "priority"])
 
@@ -124,10 +126,12 @@ class R0D1(DQN):
             # Logging information
             opt_info.loss.append(loss.item())
             opt_info.gradNorm.append(torch.tensor(grad_norm).item())  # backwards compatible
-            opt_info.init_q_min.append(q_minmax[0].item())  # q estimates
-            opt_info.init_q_max.append(q_minmax[1].item())
-            opt_info.final_q_min.append(q_minmax[2].item())
-            opt_info.final_q_max.append(q_minmax[3].item())
+            opt_info.init_q_min.append(q_minmax['init_q_min'].item())  # q estimates
+            opt_info.init_q_max.append(q_minmax['init_q_max'].item())
+            opt_info.t3_q_min.append(q_minmax['t3_q_min'].item())
+            opt_info.t3_q_max.append(q_minmax['t3_q_max'].item())
+            opt_info.final_q_min.append(q_minmax['final_q_min'].item())
+            opt_info.final_q_max.append(q_minmax['final_q_max'].item())
             opt_info.tdAbsErr.extend(td_abs_errors[::8].numpy())
             opt_info.priority.extend(priorities)
 
@@ -264,11 +268,14 @@ class R0D1(DQN):
             qs_tensor = torch.transpose(qs_tensor, 0, 1)
         qs_tensor = qs_tensor[0:valid_T, :, :]  # (valid_T, sample_B, A)
 
-        init_q_min, init_q_max = (torch.min(qs_tensor[0]),
-                                  torch.max(qs_tensor[0]))
-        final_q_min, final_q_max = (torch.min(qs_tensor[-1]),
-                                    torch.max(qs_tensor[-1]))
-        q_minmax = (init_q_min, init_q_max, final_q_min, final_q_max)
+        q_minmax = {
+            'init_q_min': torch.min(qs_tensor[0]),
+            'init_q_max': torch.max(qs_tensor[0]),
+            't3_q_min': torch.min(qs_tensor[2]),
+            't3_q_max': torch.max(qs_tensor[2]),
+            'final_q_min': torch.min(qs_tensor[-1]),
+            'final_q_max': torch.max(qs_tensor[-1])
+        }
 
         return loss, q_minmax, td_abs_errors, priorities
 

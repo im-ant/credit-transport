@@ -33,12 +33,13 @@ from rlpyt.models.dqn.atari_dqn_model import AtariDqnModel
 from rlpyt.runners.minibatch_rl import MinibatchRl, MinibatchRlEval
 from rlpyt.utils.logging.context import logger_context
 
-from envs.long_arms import LongArmsEnv
 from r0d1.algo_r0d1 import R0D1
+from envs.long_arms import LongArmsEnv
+from envs.logical_arms import LogicalArmsEnv
 
 
 def env_f(**kwargs):
-    return GymEnvWrapper(LongArmsEnv(**kwargs))
+    return GymEnvWrapper(LogicalArmsEnv(**kwargs))
 
 
 def build_and_train(config: configparser.ConfigParser,
@@ -56,13 +57,20 @@ def build_and_train(config: configparser.ConfigParser,
     img_len = config['Env'].getint('img_len')  # side length of the cifar img
     corridor_len = config['Env'].getint('corridor_length')
     env_args = {
+        'num_arms': config['Env'].getint('num_arms'),
         'corridor_length': corridor_len,
+        'final_obs_aliased': config['Env'].getboolean('final_obs_aliased'),
+        'require_final_action': config['Env'].getboolean('require_final_action'),
         'img_size': (img_len, img_len),
         'grayscale': config['Env'].getboolean('grayscale'),
         'flatten_obs': config['Env'].getboolean('flatten_obs'),
         'scale_observation': config['Env'].getboolean('scale_observation'),
         'dataset_path': config['Env']['dataset_path']
     }
+    train_env_args = {k: env_args[k] for k in env_args}  # 1-depth copying
+    train_env_args['training'] = True
+    eval_env_args = {k: env_args[k] for k in env_args}
+    eval_env_args['training'] = False  # NOTE: so far these are just dummies
 
     # =====
     # Set up algorithm
@@ -111,7 +119,7 @@ def build_and_train(config: configparser.ConfigParser,
         TrajInfoCls=TrajInfo,  # collect default trajectory info
         CollectorCls=CpuWaitResetCollector,  # each batch only has at most 1 episode
         env_kwargs=env_args,
-        batch_T=(corridor_len + 3 + 2),  # seq length of per batch of sampled data
+        batch_T=config['Training'].getint('sampler_batch_T'),  # seq length of per batch of sampled data
         batch_B=1,
         max_decorrelation_steps=0,
         eval_env_kwargs=env_args,  # eval stuff, don't think it is used
@@ -123,7 +131,9 @@ def build_and_train(config: configparser.ConfigParser,
     # ==========
     # Initialize algorithm, agent and model
     algo = R0D1(**algo_kwargs)
-    agent = R2d1Agent(ModelCls=AtariR2d1Model,
+    agent = R2d1Agent(eps_init=config['Algorithm'].getfloat('eps_init'),
+                      eps_final=config['Algorithm'].getfloat('eps_final'),
+                      ModelCls=AtariR2d1Model,
                       model_kwargs=model_kwargs)
 
     # ==========
@@ -155,7 +165,7 @@ if __name__ == "__main__":
     # Configuration file
     parser.add_argument(
         '--config_path', type=str,
-        default='/home/mila/c/chenant/repos/credit-transport/long_arms/default_config.ini',
+        default='/home/mila/c/chenant/repos/credit-transport/long_arms/r0d1/default_config.ini',
         help='path to the agent configuration .ini file'
     )
     # Logger parent path
@@ -195,21 +205,3 @@ if __name__ == "__main__":
         n_parallel=1,
         log_dir=args.log_dir,
     )
-
-
-
-    """
-    
-    usual dir:
-    log_dir = "/home/mila/c/chenant/repos/credit-transport/long_arms/tmp_log"
-
-    parser.add_argument('--run_ID', help='run identifier (logging)', type=int, default=0)
-    parser.add_argument('--cuda_idx', help='gpu to use ', type=int, default=None)
-    parser.add_argument('--n_parallel', help='number of sampler workers', type=int, default=1)
-    args = parser.parse_args()
-    build_and_train(
-        run_ID=args.run_ID,
-        cuda_idx=args.cuda_idx,
-        n_parallel=args.n_parallel,
-    )
-    """
