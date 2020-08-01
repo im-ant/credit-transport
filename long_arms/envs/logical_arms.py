@@ -16,6 +16,7 @@ import numpy as np
 from torch.utils.data import DataLoader, Subset
 from torchvision.datasets import CIFAR10
 from torchvision import transforms
+from PIL import Image
 
 
 class LogicalArmsEnv(gym.Env):
@@ -32,6 +33,7 @@ class LogicalArmsEnv(gym.Env):
 
     def __init__(self, num_arms=2,
                  corridor_length=5,
+                 final_obs_aliased=False,
                  require_final_action=False,
                  img_size=(32, 32),
                  grayscale=True,
@@ -44,6 +46,7 @@ class LogicalArmsEnv(gym.Env):
         # Attributes
         self.corridor_length = corridor_length
         self.num_arms = num_arms
+        self.final_obs_aliased = final_obs_aliased
         self.require_final_action = require_final_action  # dummy var
 
         self.img_size = img_size
@@ -67,63 +70,54 @@ class LogicalArmsEnv(gym.Env):
         # State = (arm #, arm steps)
         self.state = (0, 0)
         self.prev_img = None
+        self.prev_class = None
 
     def _init_img_dataset(self, dataset_path):
         """
         Initialize image dataset corresponding to each observaiton
 
         :param dataset_path:
-        :return: dict containing the initial, final and each arm's entrance
-                 image observation
-                    {'initial': PIL.Image.Image,
-                     '1': PIL.Image.Image,
-                     '2': PIL.Image.Image,
-                     ...,
-                     'final': PIL.Image.Image}
-                 torch.utils.data.dataset.Subset object of corridor images
-                 to be sampled. Each entry contains (PIL.Image.Image, label)
+        :return: dict containing data subset:
+                    {'initial': <torch.utils.data.dataset.Subset>,
+                     'corridor': <torch.utils.data.dataset.Subset>,
+                     ... }
+                 the subset contain (PIL.Image.Image, label)
         """
 
-        # Define the image classes of each state
-        init_class = 'automobile'
-        logic_class = 'dog'
-        corridor_class = 'bird'
-        final_class = 'deer'
+        # ==
+        # Define the classes used in the various states
+        # form: (state class : cifar label class)
+        class_dict = {
+            'initial': 'automobile',
+            'logic_1': 'dog',
+            'logic_2': 'cat',
+            'corridor': 'bird',
+            'final': 'deer',
+        }
 
         # ==
         # Download / initialize dataset
         ds = CIFAR10(dataset_path, train=self.training,
                      download=True)
 
-        # ==
-        # Separate the indeces for the different classes
-        init_idxs, logic_idxs, corri_idxs, final_idxs = [], [], [], []
-        (init_idx, logic_idx, corri_idx, final_idx) = (
-            ds.class_to_idx[init_class], ds.class_to_idx[logic_class],
-            ds.class_to_idx[corridor_class], ds.class_to_idx[final_class]
-        )
-
-        for i in range(len(ds)):
-            current_class = ds[i][1]
-            if current_class == init_idx:
-                init_idxs.append(i)
-            elif current_class == logic_idx:
-                logic_idxs.append(i)
-            elif current_class == corri_idx:
-                corri_idxs.append(i)
-            elif current_class == final_idx:
-                final_idxs.append(i)
-            else:
-                pass
-
-        # ==
-        # Construct random datasets for the states
-        ds_dict = {
-            'initial': Subset(ds, init_idxs),
-            'logic': Subset(ds, logic_idxs),
-            'corridor': Subset(ds, corri_idxs),
-            'final': Subset(ds, final_idxs)
+        # Get the CIFAR class index for each of the state classes
+        cifar_class_dict = {
+            k: ds.class_to_idx[class_dict[k]] for k in class_dict
         }
+
+        # Iterate over the CIFAR dataset and get the idxs to each class
+        cifar_indexes = {k: [] for k in class_dict}
+        for i in range(len(ds)):
+            cur_cifar_class = ds[i][1]
+            for k in class_dict:
+                if cur_cifar_class == cifar_class_dict[k]:
+                    cifar_indexes[k].append(i)
+
+        # ==
+        # Construct the data subset dictionary
+        ds_dict = {}
+        for k in class_dict:
+            ds_dict[k] = Subset(ds, cifar_indexes[k])
 
         return ds_dict
 
@@ -232,38 +226,71 @@ class LogicalArmsEnv(gym.Env):
             raise NotImplementedError
 
         # ==
-        # Generate observation, reward and done
+        # Get outputs
+        img, reward, done, info = self.state2img()
+        # Process image
+        obs = self._process_img(img)
+        self.prev_img = img
+        return obs, reward, done, info
+
+    def reset(self):
+        # Reset state
+        self.state = (0, 0)
+
+        # ==
+        # Generate observation
+        init_img, __, __, __ = self.state2img()
+        init_obs = self._process_img(init_img)
+
+        self.prev_img = init_img
+        self.prev_class = None  # NOTE TODO: maybe change, ugly solution
+        return init_obs
+
+    def state2img(self):
+        """
+        Give the current img, reward, done and info given the current state
+        :return: img, reward, done, info
+        """
         reward = 0.0
         done = False
 
         # Initial state
         if self.state[0] == 0:
-            rand_idx = np.random.randint(low=0,
-                                         high=len(self.ds_dict['initial']))
-            img = self.ds_dict['initial'][rand_idx][0]
+            img = Image.new('RGB', (32, 32), color='black')  # black init
         # First logic state
         elif self.state[1] == -1:
             rand_idx = np.random.randint(low=0,
-                                         high=len(self.ds_dict['logic']))
-            img = self.ds_dict['logic'][rand_idx][0]
+                                         high=len(self.ds_dict['logic_1']))
+            rand_idx = 3  # TODO: delete this eventually? or set up config
+            if np.random.choice([True, False]):
+                img = self.ds_dict['logic_1'][rand_idx][0]
+                self.prev_class = 1
+            else:
+                img = self.ds_dict['logic_2'][rand_idx][0]
+                self.prev_class = 2
         # Second logic state
         elif self.state[1] == 0:
-            if self.state[0] == 1:
-                img = self.prev_img
-            else:
-                rand_idx = np.random.randint(low=0,
-                                             high=len(self.ds_dict['logic']))
-                img = self.ds_dict['logic'][rand_idx][0]
+            rand_idx = np.random.randint(low=0,
+                                         high=len(self.ds_dict['logic_1']))
+            rand_idx = 3  # TODO: delete this eventually or set up config
+            img = self.ds_dict['logic_1'][rand_idx][0]
+            if (self.state[0] == 1) and (self.prev_class == 2):
+                img = self.ds_dict['logic_2'][rand_idx][0]
+            elif (self.state[0] == 2) and (self.prev_class == 1):
+                img = self.ds_dict['logic_2'][rand_idx][0]
+        # Corridor and beyond
         elif self.state[1] >= 1:
             # in corridor
             if self.state[1] <= self.corridor_length:
                 rand_idx = np.random.randint(low=0,
                                              high=len(self.ds_dict['corridor']))
                 img = self.ds_dict['corridor'][rand_idx][0]
+            # pre-terminal
             elif self.state[1] == (self.corridor_length + 1):
-                rand_idx = np.random.randint(low=0,
-                                             high=len(self.ds_dict['final']))
-                img = self.ds_dict['final'][rand_idx][0]
+                img = Image.new('RGB', (32, 32), color='green')  # green final
+                if (self.state[0] == 2) and (not self.final_obs_aliased):
+                    img = Image.new('RGB', (32, 32), color='red')  # red final
+            # terminal
             elif self.state[1] == (self.corridor_length + 2):
                 img = self.prev_img
                 done = True
@@ -277,25 +304,7 @@ class LogicalArmsEnv(gym.Env):
         else:
             raise NotImplementedError
 
-        # Process image
-        obs = self._process_img(img)
-
-        self.prev_img = img
-        return obs, reward, done, {}
-
-    def reset(self):
-        # Reset state
-        self.state = (0, 0)
-
-        # ==
-        # Generate observation
-        rand_idx = np.random.randint(low=0,
-                                     high=len(self.ds_dict['initial']))
-        init_img = self.ds_dict['initial'][rand_idx][0]
-        init_obs = self._process_img(init_img)
-
-        self.prev_img = init_img
-        return init_obs
+        return img, reward, done, {}
 
     def render(self):
         """
@@ -314,17 +323,18 @@ if __name__ == '__main__':
     # FOR TESTING ONLY
     print('hello')
 
-    seed = 5
+    seed = np.random.randint(100)
     print('numpy seed:', seed)
     np.random.seed(seed)
 
     env = LogicalArmsEnv(num_arms=2,
                          corridor_length=4,
                          require_final_action=True,
-                         img_size=(20, 20),
-                         grayscale=True,
-                         training_data=True,
-                         flatten_obs=True)
+                         img_size=(32, 32),
+                         grayscale=False,
+                         training=True,
+                         flatten_obs=False,
+                         dataset_path='/network/tmp1/chenant/ant/dataset/cifar')
 
     print('=== set-up ===')
     print(env)
