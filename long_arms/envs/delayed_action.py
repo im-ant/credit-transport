@@ -265,8 +265,10 @@ class DelayedActionEnv(gym.Env):
         elif cur_stage == 1:
             # Picture viewing states
             if cur_step == 0:
-                rand_idx = np.random.randint(low=0,
-                                             high=20)  # TODO: change to all imgs?
+                rand_idx = np.random.randint(low=10,
+                                             high=15)  # TODO: change to all imgs?
+                # TODO in general can be made more general somehow, e.g. via
+                # sampling a pre-specific subset of images (up to limit)
                 if cur_arm == 1:
                     img = self.ds_dict['choice_1'][rand_idx][0]
                 else:
