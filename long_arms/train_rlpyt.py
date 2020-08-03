@@ -34,12 +34,14 @@ from rlpyt.runners.minibatch_rl import MinibatchRl, MinibatchRlEval
 from rlpyt.utils.logging.context import logger_context
 
 from r0d1.algo_r0d1 import R0D1
+from r0d1.model_r0d1 import R0d1Model
 from envs.long_arms import LongArmsEnv
 from envs.logical_arms import LogicalArmsEnv
+from envs.delayed_action import DelayedActionEnv
 
 
 def env_f(**kwargs):
-    return GymEnvWrapper(LogicalArmsEnv(**kwargs))
+    return GymEnvWrapper(DelayedActionEnv(**kwargs))
 
 
 def build_and_train(config: configparser.ConfigParser,
@@ -58,7 +60,8 @@ def build_and_train(config: configparser.ConfigParser,
     corridor_len = config['Env'].getint('corridor_length')
     env_args = {
         'num_arms': config['Env'].getint('num_arms'),
-        'corridor_length': corridor_len,
+        'action_delay_len': 5,  # TODO change to config['Env'].getint('action_delay_len')
+        'corridor_length': 0,  # TODO change to corridor_len
         'final_obs_aliased': config['Env'].getboolean('final_obs_aliased'),
         'require_final_action': config['Env'].getboolean('require_final_action'),
         'img_size': (img_len, img_len),
@@ -77,7 +80,6 @@ def build_and_train(config: configparser.ConfigParser,
     algo_kwargs = {
         'discount': config['Algorithm'].getfloat('discount'),
         'lambda_coef': config['Algorithm'].getfloat('lambda_coef'),
-        'use_recurrence': config['Algorithm'].getboolean('use_recurrence'),
         'target_update_interval': int(config['Algorithm'].getfloat('target_update_interval')),
         'min_steps_learn': int(config['Algorithm'].getfloat('min_steps_learn')),
         'eps_steps': int(config['Algorithm'].getfloat('eps_steps')),
@@ -96,6 +98,7 @@ def build_and_train(config: configparser.ConfigParser,
     model_kwargs = {
         'image_shape': (img_channels, img_len, img_len),
         'output_size': config['Env'].getint('num_arms'),
+        'use_recurrence': config['Model'].getboolean('use_recurrence'),
         'fc_size': config['Model'].getint('fc_size'),
         'lstm_size': config['Model'].getint('lstm_size'),
         'head_size': config['Model'].getint('head_size'),
@@ -133,7 +136,7 @@ def build_and_train(config: configparser.ConfigParser,
     algo = R0D1(**algo_kwargs)
     agent = R2d1Agent(eps_init=config['Algorithm'].getfloat('eps_init'),
                       eps_final=config['Algorithm'].getfloat('eps_final'),
-                      ModelCls=AtariR2d1Model,
+                      ModelCls=R0d1Model,
                       model_kwargs=model_kwargs)
 
     # ==========

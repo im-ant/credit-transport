@@ -17,9 +17,12 @@ from rlpyt.utils.buffer import buffer_to, buffer_method, torchify_buffer
 # TODO: update this
 OptInfo = namedtuple("OptInfo", ["loss", "gradNorm",
                                  "init_q_min", "init_q_max",
+                                 "init_td_delta", "t2_td_delta", "final_td_delta",
+                                 "init_abs_delta", "t2_abs_delta", "final_abs_delta",
                                  "t3_q_min", "t3_q_max",
                                  "final_q_min", "final_q_max",
                                  "tdAbsErr", "priority"])
+
 
 SamplesToBufferRnn = namedarraytuple("SamplesToBufferRnn",
                                      SamplesToBuffer._fields + ("prev_rnn_state",))
@@ -39,7 +42,6 @@ class R0D1(DQN):
             self,
             discount=0.997,
             lambda_coef=1.0,
-            use_recurrence=True,
             batch_T=80,
             batch_B=64,
             warmup_T=40,
@@ -98,6 +100,8 @@ class R0D1(DQN):
         save__init__args(locals())
         self._batch_size = (self.batch_T + self.warmup_T) * self.batch_B
 
+        self.use_recurrence = True  # TODO delete later, dummy variable now
+
     def optimize_agent(self, itr, samples=None, sampler_itr=None):
         """
         Similar to DQN, except allows to compute the priorities of new samples
@@ -117,7 +121,7 @@ class R0D1(DQN):
         if samples is not None:
             # One training step
             self.optimizer.zero_grad()
-            loss, q_minmax, td_abs_errors, priorities = self.loss(samples)
+            loss, q_minmax, td_delta, td_abs_errors, priorities = self.loss(samples)
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.agent.parameters(), self.clip_grad_norm)
@@ -126,6 +130,12 @@ class R0D1(DQN):
             # Logging information
             opt_info.loss.append(loss.item())
             opt_info.gradNorm.append(torch.tensor(grad_norm).item())  # backwards compatible
+            opt_info.init_td_delta.append(td_delta['init_td_delta'].item())  # td delta estimates
+            opt_info.t2_td_delta.append(td_delta['t2_td_delta'].item())
+            opt_info.final_td_delta.append(td_delta['final_td_delta'].item())
+            opt_info.init_td_delta.append(td_delta['init_abs_delta'])
+            opt_info.t2_abs_delta.append(td_delta['t2_abs_delta'])
+            opt_info.final_abs_delta.append(td_delta['final_abs_delta'])
             opt_info.init_q_min.append(q_minmax['init_q_min'].item())  # q estimates
             opt_info.init_q_max.append(q_minmax['init_q_max'].item())
             opt_info.t3_q_min.append(q_minmax['t3_q_min'].item())
@@ -166,8 +176,9 @@ class R0D1(DQN):
         # NOTE TODO: both networks take the previous action and rewards as
         #            LSTM input. May want to set these to zero.
         obs_tensor, prev_act_tensor, prev_rew_tensor = buffer_to(
-            (samples.env.observation, samples.agent.prev_action,
-             samples.env.prev_reward),
+            (samples.env.observation.clone().detach(),
+             samples.agent.prev_action.clone().detach(),
+             samples.env.prev_reward.clone().detach()),
             device=self.agent.device
         )
 
@@ -234,6 +245,7 @@ class R0D1(DQN):
         # Compute lambda return values
         if not self.use_recurrence:
             target_q.transpose_(0, 1)
+
         lambda_G = self.compute_lambda_return(reward, target_q,
                                               valid)  # (T, 1)
         if not self.use_recurrence:
@@ -277,7 +289,19 @@ class R0D1(DQN):
             'final_q_max': torch.max(qs_tensor[-1])
         }
 
-        return loss, q_minmax, td_abs_errors, priorities
+        # Store the TD error
+        delta_tensor = torch.flatten(delta.clone().detach())
+        abs_delta_tensor = torch.abs(delta_tensor)
+        td_delta = {
+            'init_td_delta': delta_tensor[0],
+            'init_abs_delta': abs_delta_tensor[0],
+            't2_td_delta': delta_tensor[1],
+            't2_abs_delta': abs_delta_tensor[1],
+            'final_td_delta': delta_tensor[-1],
+            'final_abs_delta': abs_delta_tensor[-1],
+        }
+
+        return loss, q_minmax, td_delta, td_abs_errors, priorities
 
     def compute_lambda_return(self, r_traj, v_traj, valid):
         """
