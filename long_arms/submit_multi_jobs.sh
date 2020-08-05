@@ -4,11 +4,11 @@
 
 
 # Optional: message to put into the created directory? TODO fix this
-dir_message="Evaluating the stability of td0 with no BPTT on long horizon two arms task"
+dir_message="Delay action arm, policy evalution with final observation aliasing, compare LSTM vs. MLP"
 
 # The parent experimental directory, each experiment will be stored as a sub-
 # directory within this directory
-dir_path="/network/tmp1/chenant/ant/cred_transport/long_arms/07-27/exp2_long-td"
+dir_path="/network/tmp1/chenant/ant/cred_transport/long_arms/08-04/exp1_rep"
 
 # Path to the parent directory containing the configuration files, one per
 # experiment. Experiment folder will be named after the config file names

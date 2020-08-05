@@ -25,6 +25,7 @@ import torch
 from rlpyt.samplers.serial.sampler import SerialSampler
 from rlpyt.samplers.collections import TrajInfo
 from rlpyt.samplers.parallel.cpu.collectors import CpuWaitResetCollector
+from rlpyt.samplers.serial.collectors import SerialEvalCollector
 from rlpyt.envs.gym import GymEnvWrapper
 from rlpyt.envs.atari.atari_env import AtariEnv, AtariTrajInfo
 from rlpyt.agents.dqn.r2d1_agent import R2d1Agent
@@ -34,12 +35,14 @@ from rlpyt.runners.minibatch_rl import MinibatchRl, MinibatchRlEval
 from rlpyt.utils.logging.context import logger_context
 
 from r0d1.algo_r0d1 import R0D1
+from r0d1.model_r0d1 import R0d1Model
 from envs.long_arms import LongArmsEnv
 from envs.logical_arms import LogicalArmsEnv
+from envs.delayed_action import DelayedActionEnv
 
 
 def env_f(**kwargs):
-    return GymEnvWrapper(LogicalArmsEnv(**kwargs))
+    return GymEnvWrapper(DelayedActionEnv(**kwargs))
 
 
 def build_and_train(config: configparser.ConfigParser,
@@ -53,12 +56,16 @@ def build_and_train(config: configparser.ConfigParser,
     print(f"Using serial sampler, {gpu_cpu} for sampling and optimizing.")
 
     # =====
+    # Set up eval
+    do_eval = config['Training'].getboolean('do_eval')
+
+    # =====
     # Set up environment
     img_len = config['Env'].getint('img_len')  # side length of the cifar img
-    corridor_len = config['Env'].getint('corridor_length')
     env_args = {
         'num_arms': config['Env'].getint('num_arms'),
-        'corridor_length': corridor_len,
+        'action_delay_len': config['Env'].getint('action_delay_len'),
+        'corridor_length': config['Env'].getint('corridor_length'),
         'final_obs_aliased': config['Env'].getboolean('final_obs_aliased'),
         'require_final_action': config['Env'].getboolean('require_final_action'),
         'img_size': (img_len, img_len),
@@ -77,7 +84,6 @@ def build_and_train(config: configparser.ConfigParser,
     algo_kwargs = {
         'discount': config['Algorithm'].getfloat('discount'),
         'lambda_coef': config['Algorithm'].getfloat('lambda_coef'),
-        'use_recurrence': config['Algorithm'].getboolean('use_recurrence'),
         'target_update_interval': int(config['Algorithm'].getfloat('target_update_interval')),
         'min_steps_learn': int(config['Algorithm'].getfloat('min_steps_learn')),
         'eps_steps': int(config['Algorithm'].getfloat('eps_steps')),
@@ -96,6 +102,7 @@ def build_and_train(config: configparser.ConfigParser,
     model_kwargs = {
         'image_shape': (img_channels, img_len, img_len),
         'output_size': config['Env'].getint('num_arms'),
+        'use_recurrence': config['Model'].getboolean('use_recurrence'),
         'fc_size': config['Model'].getint('fc_size'),
         'lstm_size': config['Model'].getint('lstm_size'),
         'head_size': config['Model'].getint('head_size'),
@@ -114,6 +121,10 @@ def build_and_train(config: configparser.ConfigParser,
 
     # ==========
     # Initialize environment sampler
+    eval_n_envs = 0
+    if do_eval:
+        eval_n_envs = 1  # NOTE maybe TODO: change this?
+
     sampler = SerialSampler(
         EnvCls=env_f,
         TrajInfoCls=TrajInfo,  # collect default trajectory info
@@ -122,8 +133,9 @@ def build_and_train(config: configparser.ConfigParser,
         batch_T=config['Training'].getint('sampler_batch_T'),  # seq length of per batch of sampled data
         batch_B=1,
         max_decorrelation_steps=0,
+        eval_CollectorCls=SerialEvalCollector,
         eval_env_kwargs=env_args,  # eval stuff, don't think it is used
-        eval_n_envs=0,
+        eval_n_envs=eval_n_envs,
         eval_max_steps=int(10e3),
         eval_max_trajectories=5,
     )
@@ -133,13 +145,17 @@ def build_and_train(config: configparser.ConfigParser,
     algo = R0D1(**algo_kwargs)
     agent = R2d1Agent(eps_init=config['Algorithm'].getfloat('eps_init'),
                       eps_final=config['Algorithm'].getfloat('eps_final'),
-                      ModelCls=AtariR2d1Model,
+                      ModelCls=R0d1Model,
                       model_kwargs=model_kwargs)
 
     # ==========
     # Initialize runner
     # (note can use MinibatchRlEval to also have eval runs)
-    runner = MinibatchRl(
+    if do_eval:
+        runnerCls = MinibatchRlEval
+    else:
+        runnerCls = MinibatchRl
+    runner = runnerCls(
         algo=algo,
         agent=agent,
         sampler=sampler,
