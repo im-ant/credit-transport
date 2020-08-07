@@ -121,6 +121,7 @@ def build_and_train(config: configparser.ConfigParser,
         'name': config['Training']['exp_name'],
         'run_ID': config['Training'].getint('seed'),
         'snapshot_mode': config['Training']['log_snapshot_mode'],
+        'use_summary_writer': config['Training'].getboolean('log_use_summary_writer'),
     }
 
     # ==========
