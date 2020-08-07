@@ -182,7 +182,7 @@ class R0D1(DQN):
 
             # Logging information
             opt_info.loss.append(loss.item())
-            opt_info.gradNorm.append(torch.tensor(grad_norm).item())  # backwards compatible
+            opt_info.gradNorm.append(grad_norm.clone().detach().item())
             opt_info.init_td_delta.append(info_dict['init_td_delta'].item())  # td delta estimates
             opt_info.t2_td_delta.append(info_dict['t2_td_delta'].item())
             opt_info.final_td_delta.append(info_dict['final_td_delta'].item())
