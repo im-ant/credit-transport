@@ -24,7 +24,8 @@ import torch
 
 from rlpyt.samplers.serial.sampler import SerialSampler
 from rlpyt.samplers.collections import TrajInfo
-from rlpyt.samplers.parallel.cpu.collectors import CpuWaitResetCollector
+from rlpyt.samplers.parallel.cpu.collectors import (CpuResetCollector,
+                                                    CpuWaitResetCollector)
 from rlpyt.samplers.serial.collectors import SerialEvalCollector
 from rlpyt.envs.gym import GymEnvWrapper
 from rlpyt.envs.atari.atari_env import AtariEnv, AtariTrajInfo
@@ -84,6 +85,9 @@ def build_and_train(config: configparser.ConfigParser,
     algo_kwargs = {
         'discount': config['Algorithm'].getfloat('discount'),
         'lambda_coef': config['Algorithm'].getfloat('lambda_coef'),
+        'batch_T': config['Algorithm'].getint('algo_batch_T'),
+        'store_rnn_state_interval': config['Algorithm'].getint('store_rnn_state_interval'),
+        'batch_B': int(config['Algorithm'].getfloat('replay_batch_B')),
         'target_update_interval': int(config['Algorithm'].getfloat('target_update_interval')),
         'min_steps_learn': int(config['Algorithm'].getfloat('min_steps_learn')),
         'eps_steps': int(config['Algorithm'].getfloat('eps_steps')),
@@ -128,7 +132,7 @@ def build_and_train(config: configparser.ConfigParser,
     sampler = SerialSampler(
         EnvCls=env_f,
         TrajInfoCls=TrajInfo,  # collect default trajectory info
-        CollectorCls=CpuWaitResetCollector,  # each batch only has at most 1 episode
+        CollectorCls=CpuResetCollector,  # [CpuWaitResetCollector, CpuResetCollector]
         env_kwargs=env_args,
         batch_T=config['Training'].getint('sampler_batch_T'),  # seq length of per batch of sampled data
         batch_B=1,
