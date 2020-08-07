@@ -1,3 +1,6 @@
+# ============================================================================
+# The optionally recurrent Deep Q learning agent
+# ============================================================================
 import torch
 from collections import namedtuple
 
@@ -6,10 +9,7 @@ from rlpyt.agents.base import AgentInputs
 from rlpyt.utils.quick_args import save__init__args
 from rlpyt.utils.logging import logger
 from rlpyt.utils.collections import namedarraytuple
-from rlpyt.replays.sequence.frame import (UniformSequenceReplayFrameBuffer,
-                                          PrioritizedSequenceReplayFrameBuffer,
-                                          AsyncUniformSequenceReplayFrameBuffer,
-                                          AsyncPrioritizedSequenceReplayFrameBuffer)
+from rlpyt.replays.sequence.uniform import UniformSequenceReplayBuffer
 from rlpyt.utils.tensor import select_at_indexes, valid_mean
 from rlpyt.algos.utils import valid_from_done, discount_return_n_step
 from rlpyt.utils.buffer import buffer_to, buffer_method, torchify_buffer
@@ -22,7 +22,6 @@ OptInfo = namedtuple("OptInfo", ["loss", "gradNorm",
                                  "tneg2_q_min", "tneg2_q_max",
                                  "final_q_min", "final_q_max",
                                  "tdAbsErr", "priority"])
-
 
 SamplesToBufferRnn = namedarraytuple("SamplesToBufferRnn",
                                      SamplesToBuffer._fields + ("prev_rnn_state",))
@@ -42,27 +41,23 @@ class R0D1(DQN):
             self,
             discount=0.997,
             lambda_coef=1.0,
-            batch_T=80,
+            batch_T=12,  # replay trajectory length
             batch_B=64,
-            warmup_T=40,
-            store_rnn_state_interval=40,  # 0 for none, 1 for all.
+            warmup_T=0,  # originally 40
+            store_rnn_state_interval=9,  # 0 for none, 1 for all. default was 40
             min_steps_learn=int(1e5),
             delta_clip=None,  # Typically use squared-error loss (Steven).
             replay_size=int(1e6),
             replay_ratio=1,
             target_update_interval=2500,  # (Steven says 2500 but maybe faster.)
-            n_step_return=5,
+            n_step_return=1,  # originally 5, minimum is 1
             learning_rate=1e-4,
             OptimCls=torch.optim.Adam,
             optim_kwargs=None,
             initial_optim_state_dict=None,
-            clip_grad_norm=80.,  # 80 (Steven).
-            # eps_init=1,  # NOW IN AGENT.
-            # eps_final=0.1,
-            # eps_final_min=0.0005,
-            # eps_eval=0.001,
+            clip_grad_norm=80.,  # 80 (Steven)
             eps_steps=int(1e6),  # STILL IN ALGO; conver to itr, give to agent.
-            double_dqn=True,
+            double_dqn=False,  # originally True
             prioritized_replay=True,
             pri_alpha=0.6,
             pri_beta_init=0.9,
@@ -70,7 +65,7 @@ class R0D1(DQN):
             pri_beta_steps=int(50e6),
             pri_eta=0.9,
             default_priority=None,
-            input_priorities=True,
+            input_priorities=False,  # default True, not sure what it is used for
             input_priority_shift=None,
             value_scale_eps=1e-3,  # 1e-3 (Steven).
             ReplayBufferCls=None,  # leave None to select by above options
@@ -95,12 +90,59 @@ class R0D1(DQN):
             optim_kwargs = dict(eps=1e-3)  # Assumes Adam.
         if default_priority is None:
             default_priority = delta_clip or 1.
-        if input_priority_shift is None:
-            input_priority_shift = warmup_T // store_rnn_state_interval
+        # if input_priority_shift is None:  # only used in prioritized replay and warmup i think NOTE
+        #     input_priority_shift = warmup_T // store_rnn_state_interval
         save__init__args(locals())
         self._batch_size = (self.batch_T + self.warmup_T) * self.batch_B
 
         self.use_recurrence = True  # TODO delete later, dummy variable now
+
+    def initialize_replay_buffer(self, examples, batch_spec, async_=False):
+        """Similar to DQN but uses replay buffers which return sequences, and
+        stores the agent's recurrent state."""
+        example_to_buffer = SamplesToBuffer(
+            observation=examples["observation"],
+            action=examples["action"],
+            reward=examples["reward"],
+            done=examples["done"],
+        )
+        if self.store_rnn_state_interval > 0:
+            example_to_buffer = SamplesToBufferRnn(*example_to_buffer,
+                                                   prev_rnn_state=examples["agent_info"].prev_rnn_state,
+                                                   )
+
+        replay_kwargs = dict(
+            example=example_to_buffer,
+            size=self.replay_size,
+            B=batch_spec.B,
+            discount=self.discount,
+            n_step_return=self.n_step_return,
+            rnn_state_interval=self.store_rnn_state_interval,
+            # batch_T fixed for prioritized, (relax if rnn_state_interval=1 or 0).
+            batch_T=self.batch_T + self.warmup_T,
+        )
+
+        ReplayCls = UniformSequenceReplayBuffer
+
+        if self.ReplayBufferCls is not None:
+            ReplayCls = self.ReplayBufferCls
+            logger.log(f"WARNING: ignoring internal selection logic and using"
+                       f" input replay buffer class: {ReplayCls} -- compatibility not"
+                       " guaranteed.")
+        self.replay_buffer = ReplayCls(**replay_kwargs)
+
+        return self.replay_buffer
+
+    def samples_to_buffer(self, samples):
+        samples_to_buffer = super().samples_to_buffer(samples)
+        if self.store_rnn_state_interval > 0:
+            samples_to_buffer = SamplesToBufferRnn(*samples_to_buffer,
+                                                   prev_rnn_state=samples.agent.agent_info.prev_rnn_state)
+        if self.input_priorities:
+            priorities = self.compute_input_priorities(samples)
+            samples_to_buffer = PrioritiesSamplesToBuffer(
+                priorities=priorities, samples=samples_to_buffer)
+        return samples_to_buffer
 
     def optimize_agent(self, itr, samples=None, sampler_itr=None):
         """
@@ -111,20 +153,31 @@ class R0D1(DQN):
         """
 
         # ==
-        # Initialize logging and check
+        # Store sample to buffer
+        if samples is not None:
+            samples_to_buffer = self.samples_to_buffer(samples)
+            self.replay_buffer.append_samples(samples_to_buffer)
+
+        # Initialize logging
         opt_info = OptInfo(*([] for _ in range(len(OptInfo._fields))))
         if itr < self.min_itr_learn:
             return opt_info
 
+        torch.autograd.set_detect_anomaly(True)  # TODO fix and delete
+
         # ==
         # Train
-        if samples is not None:
+        for _ in range(self.updates_per_optimize):
+            # Get sample from buffer
+            buffer_samples = self.replay_buffer.sample_batch(self.batch_B)
+
             # One training step
             self.optimizer.zero_grad()
-            loss, info_dict, td_abs_errors, priorities = self.loss(samples)
+            loss, info_dict = self.loss(buffer_samples)
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.agent.parameters(), self.clip_grad_norm)
+                self.agent.parameters(), self.clip_grad_norm
+            )
             self.optimizer.step()
 
             # Logging information
@@ -142,8 +195,7 @@ class R0D1(DQN):
             opt_info.tneg2_q_max.append(info_dict['tneg2_q_max'].item())
             opt_info.final_q_min.append(info_dict['final_q_min'].item())
             opt_info.final_q_max.append(info_dict['final_q_max'].item())
-            opt_info.tdAbsErr.extend(td_abs_errors[::8].numpy())
-            opt_info.priority.extend(priorities)
+            opt_info.tdAbsErr.extend(info_dict['valid_td_abs_errors'][::8].numpy())
 
             # Update counter
             self.update_counter += 1
@@ -158,99 +210,74 @@ class R0D1(DQN):
     def loss(self, samples):
         """
         Compute TD loss for online samples
-        :param samples: a single online sample of shape [T, B, *]
+        :param samples: SamplesFromReplay object
         :return:
         """
-        # Get the sequence length of the given sample
-        sample_T = samples.env.observation.size(0)
-        sample_B = samples.env.observation.size(1)
-
-        # Get valid sequence (including the first terminal state)
-        valid = valid_from_done(samples.env.done[0:])
-        valid_T = int(torch.sum(valid).item())
 
         # ==
         # Extract individual tensors from the sample, shape (T, B, *)
 
         # Input for LSTM
-        # NOTE TODO: both networks take the previous action and rewards as
+        # NOTE both networks take the previous action and rewards as
         #            LSTM input. May want to set these to zero.
-        obs_tensor, prev_act_tensor, prev_rew_tensor = buffer_to(
-            (samples.env.observation.clone().detach(),
-             samples.agent.prev_action.clone().detach(),
-             samples.env.prev_reward.clone().detach()),
-            device=self.agent.device
-        )
+        # TODO: set the reward and action to zero? or at least reawrd to zero
+        #
+        all_observation, all_action, all_reward = buffer_to(
+            (samples.all_observation.clone().detach(),
+             samples.all_action.clone().detach(),
+             samples.all_reward.clone().detach()),
+            device=self.agent.device)
 
-        # Extract action, reward and done (on CPU)
-        action = samples.agent.action[0: sample_T]
-        reward = samples.env.reward[0: sample_T]
-
-        # ==
-        # Put everything on the batch dimension if not using recurrence
-        if not self.use_recurrence:
-            sample_T = 1
-            sample_B = sample_B * sample_T
-
-            obs_tensor = obs_tensor.view(1, -1, *(obs_tensor.size()[2:]))
-            prev_act_tensor = prev_act_tensor.\
-                view(1, -1, *(prev_act_tensor.size()[2:]))
-            prev_rew_tensor = prev_rew_tensor.\
-                view(1, -1, *(prev_rew_tensor.size()[2:]))
-
-            action = action.view(1, -1, *(action.size()[2:]))
+        # Extract action, reward and done on CPU
+        action = samples.all_action[1:self.batch_T + 1]
+        return_ = samples.return_[0:self.batch_T]  # "n-step" rewards, n=1
+        done_n = samples.done_n[0:self.batch_T]
 
         # ==
-        # Compute the Q estimates
-        # NOTE: no RNN warm-up unlike R2D1 / R2D2
-
-        agent_slice = slice(0, sample_T)
+        # Compute Q estimates (NOTE: no RNN warm-up)
+        agent_slice = slice(0, self.batch_T)
         agent_inputs = AgentInputs(
-            observation=obs_tensor[agent_slice].clone().detach(),
-            prev_action=prev_act_tensor[agent_slice].clone().detach(),
-            prev_reward=prev_rew_tensor[agent_slice].clone().detach(),
+            observation=all_observation[agent_slice].clone().detach(),
+            prev_action=all_action[agent_slice].clone().detach(),
+            prev_reward=all_reward[agent_slice].clone().detach(),
         )
-        target_slice = slice(0, sample_T)
+        target_slice = slice(0, None)  # Same start t as agent. (0 + bT + nsr)
         target_inputs = AgentInputs(
-            observation=obs_tensor[target_slice].clone().detach(),
-            prev_action=prev_act_tensor[target_slice].clone().detach(),
-            prev_reward=prev_rew_tensor[target_slice].clone().detach(),
+            observation=all_observation[target_slice],
+            prev_action=all_action[target_slice],
+            prev_reward=all_reward[target_slice],
         )
 
-        init_rnn_state = None
-        target_rnn_state = None
+        # Init RNN state should be 0s / None either way
+        if self.store_rnn_state_interval == 0:
+            init_rnn_state = None
+        else:
+            # [B,N,H]-->[N,B,H] cudnn.
+            init_rnn_state = buffer_method(samples.init_rnn_state,
+                                           "transpose", 0, 1)
+            init_rnn_state = buffer_method(init_rnn_state,
+                                           "contiguous")
+        target_rnn_state = init_rnn_state  # NOTE: no RNN warmup for target
 
         # Behavioural net Q estimate
         qs, _ = self.agent(*agent_inputs, init_rnn_state)  # [T,B,A]
         q = select_at_indexes(action, qs)
-        if self.use_recurrence:
-            q = q[0:valid_T]  # (T, 1)  NOTE really only works for non-batch data
-        else:
-            q = q[:, 0:valid_T]  # (1, T)
-
         # Target network Q estimates
-        # NOTE: "target_q" is actually "next_q" (i.e. q estimate at next step)
         with torch.no_grad():
             target_qs, _ = self.agent.target(*target_inputs, target_rnn_state)
             if self.double_dqn:
-                # NOTE did not debug double DQN to see if this logic is good
                 next_qs, _ = self.agent(*target_inputs, init_rnn_state)
                 next_a = torch.argmax(next_qs, dim=-1)
                 target_q = select_at_indexes(next_a, target_qs)
             else:
                 target_q = torch.max(target_qs, dim=-1).values
-            target_q = target_q  # (sample_T, sample_B)
+            target_q = target_q[-self.batch_T:]  # Same length as q.
 
         # ==
-        # Compute lambda return values
-        if not self.use_recurrence:
-            target_q.transpose_(0, 1)
-
-        lambda_G = self.compute_lambda_return(reward, target_q,
+        # Compute lambda return from valid sequence
+        valid = valid_from_done(done_n)
+        lambda_G = self.compute_lambda_return(return_, target_q,
                                               valid)  # (T, 1)
-        if not self.use_recurrence:
-            target_q.transpose_(0, 1)
-            lambda_G = torch.transpose(lambda_G, 0, 1)
 
         # ==
         # Compute Losses
@@ -263,125 +290,67 @@ class R0D1(DQN):
             b = self.delta_clip * (abs_delta - self.delta_clip / 2)
             losses = torch.where(abs_delta <= self.delta_clip, losses, b)
 
-        loss = torch.mean(losses)
+        loss = valid_mean(losses, valid)
 
         td_abs_errors = abs_delta.detach()
-        if self.delta_clip is not None:
-            td_abs_errors = torch.clamp(td_abs_errors, 0, self.delta_clip)  # [T,B]
+        # NOTE: not computing prioritization
 
-        # Estimate priorities? NOTE DEPRECATED NOT USED
-        max_d = torch.max(td_abs_errors, dim=0).values  # NOTE: wrong dim with no recurrence
-        mean_d = torch.mean(td_abs_errors, dim=0)
-        priorities = self.pri_eta * max_d + (1 - self.pri_eta) * mean_d  # [B]
-
-        # Store the q estimates
+        # ==
+        # Compute information to log
+        valid_t = int(torch.sum(valid[:, 0]).item())  # NOTE: assume all same length
+        info_dict = {}
+        # Store the q estimates (of the first sample in batch)
         qs_tensor = qs.clone().detach()  # [sample_T, sample_B, A]
-        if not self.use_recurrence:
-            qs_tensor = torch.transpose(qs_tensor, 0, 1)
-        qs_tensor = qs_tensor[0:valid_T, :, :]  # (valid_T, sample_B, A)
-
-        info_dict = {
-            'init_q_min': torch.min(qs_tensor[0]),
-            'init_q_max': torch.max(qs_tensor[0]),
-            'tneg2_q_min': torch.min(qs_tensor[-2]),
-            'tneg2_q_max': torch.max(qs_tensor[-2]),
-            'final_q_min': torch.min(qs_tensor[-1]),
-            'final_q_max': torch.max(qs_tensor[-1])
-        }
-
-        # Store the TD error
-        delta_tensor = torch.flatten(delta.clone().detach())
-        abs_delta_tensor = torch.abs(delta_tensor)
+        qs_tensor = qs_tensor[0:valid_t, :, :]  # [valid_t, sample_B, A]
+        info_dict['init_q_min'] = torch.min(qs_tensor[0, 0, :])
+        info_dict['init_q_max'] = torch.max(qs_tensor[0, 0, :])
+        info_dict['tneg2_q_min'] = torch.min(qs_tensor[-2, 0, :])
+        info_dict['tneg2_q_max'] = torch.max(qs_tensor[-2, 0, :])
+        info_dict['final_q_min'] = torch.min(qs_tensor[-1, 0, :])
+        info_dict['final_q_max'] = torch.max(qs_tensor[-1, 0, :])
+        # Store the TD error (average over batch)
+        delta_cp = delta.clone().detach()[0:valid_t]
+        delta_tensor = torch.mean(delta_cp, dim=1)
+        abs_delta_tensor = torch.mean(torch.abs(delta_cp), dim=1)
         info_dict['init_td_delta'] = delta_tensor[0]
         info_dict['init_abs_delta'] = abs_delta_tensor[0]
         info_dict['t2_td_delta'] = delta_tensor[1]
         info_dict['t2_abs_delta'] = abs_delta_tensor[1]
         info_dict['final_td_delta'] = delta_tensor[-1]
         info_dict['final_abs_delta'] = abs_delta_tensor[-1]
+        # All abs errors
+        info_dict['valid_td_abs_errors'] = td_abs_errors * valid
 
-        return loss, info_dict, td_abs_errors, priorities
+        return loss, info_dict
 
     def compute_lambda_return(self, r_traj, v_traj, valid):
         """
-        Compute the lambda return. Assumes state at T is the terminate state
-        NOTE ASSUMPTION: sample_T > valid_T
+        Compute the lambda return. Assumes valid gives the valid trajectory
+        up to the very first "done"
         :param r_traj: reward traj, torch.tensor size (sample_T, 1)
         :param v_traj: value esti traj, torch.tensor size (sample_T, 1)
         :param valid: valid indicator, torch.tensor size (sample_T, 1)
         :return: G_traj: lambda return, torch.tensor size (T, 1)
         """
 
-        # TODO: update this to work with batches
+        # Initialize lambda tensor and coefficients
+        lamb_G = torch.zeros(v_traj.size())
+        lamb = self.lambda_coef
+        gamma = self.discount
 
-        # Get trajectory length
-        valid_T = int(torch.sum(valid).item())
+        # Compute lambda return via dynamic programming
+        for t in reversed(range(lamb_G.size(0)-1)):
+            G_t = (r_traj[t, :] + (valid[t+1, :] * (
+                    ((1 - lamb) * gamma * v_traj[t+1, :]) +
+                    (lamb * gamma * lamb_G[t+1, :]))
+            ))
+            lamb_G[t, :] = G_t * valid[t, :]
 
-        valid_v_traj = (valid * v_traj)
-
-        # TODO: implementing TD(0) and MC for now, do lambda later
-
-        # lambda == 0 -> TD(0)
-        if self.lambda_coef == 0.0:
-            ret_G = (r_traj[0: valid_T] +
-                     (self.discount * valid_v_traj[1: valid_T + 1]))
-        # lambda == 1 -> monte carlo
-        elif self.lambda_coef == 1.0:
-            ret_G = r_traj[0: valid_T].clone().detach()
-            for t in reversed(range(1, valid_T)):
-                ret_G[t - 1] = ret_G[t - 1] + (self.discount * ret_G[t])
-        else:
-            raise NotImplementedError
-
-        return ret_G
+        return lamb_G
 
     # ==
     # Below is old code
     # ==
-
-    def initialize_replay_buffer(self, examples, batch_spec, async_=False):
-        """Similar to DQN but uses replay buffers which return sequences, and
-        stores the agent's recurrent state."""
-        example_to_buffer = SamplesToBuffer(
-            observation=examples["observation"],
-            action=examples["action"],
-            reward=examples["reward"],
-            done=examples["done"],
-        )
-        if self.store_rnn_state_interval > 0:
-            example_to_buffer = SamplesToBufferRnn(*example_to_buffer,
-                                                   prev_rnn_state=examples["agent_info"].prev_rnn_state,
-                                                   )
-        replay_kwargs = dict(
-            example=example_to_buffer,
-            size=self.replay_size,
-            B=batch_spec.B,
-            discount=self.discount,
-            n_step_return=self.n_step_return,
-            rnn_state_interval=self.store_rnn_state_interval,
-            # batch_T fixed for prioritized, (relax if rnn_state_interval=1 or 0).
-            batch_T=self.batch_T + self.warmup_T,
-        )
-
-        ReplayCls = UniformSequenceReplayFrameBuffer  # NOTE: removed complexity
-
-        if self.ReplayBufferCls is not None:
-            ReplayCls = self.ReplayBufferCls
-            logger.log(f"WARNING: ignoring internal selection logic and using"
-                       f" input replay buffer class: {ReplayCls} -- compatibility not"
-                       " guaranteed.")
-        self.replay_buffer = ReplayCls(**replay_kwargs)
-        return self.replay_buffer
-
-    def samples_to_buffer(self, samples):
-        samples_to_buffer = super().samples_to_buffer(samples)
-        if self.store_rnn_state_interval > 0:
-            samples_to_buffer = SamplesToBufferRnn(*samples_to_buffer,
-                                                   prev_rnn_state=samples.agent.agent_info.prev_rnn_state)
-        if self.input_priorities:
-            priorities = self.compute_input_priorities(samples)
-            samples_to_buffer = PrioritiesSamplesToBuffer(
-                priorities=priorities, samples=samples_to_buffer)
-        return samples_to_buffer
 
     def compute_input_priorities(self, samples):
         """Used when putting new samples into the replay buffer.  Computes
@@ -445,104 +414,6 @@ class R0D1(DQN):
         mean_d = valid_mean(delta, valid, dim=0)  # Still high if less valid.
         priorities = self.pri_eta * max_d + (1 - self.pri_eta) * mean_d  # [B]
         return priorities.numpy()
-
-    def buffer_loss(self, samples):
-        """Samples have leading Time and Batch dimentions [T,B,..]. Move all
-        samples to device first, and then slice for sub-sequences.  Use same
-        init_rnn_state for agent and target; start both at same t.  Warmup the
-        RNN state first on the warmup subsequence, then train on the remaining
-        subsequence.
-
-        Returns loss (usually use MSE, not Huber), TD-error absolute values,
-        and new sequence-wise priorities, based on weighted sum of max and mean
-        TD-error over the sequence."""
-
-        print('samples', samples)  # TODO delete
-        # other TODO: just use the online samples here, and simplify
-
-        all_observation, all_action, all_reward = buffer_to(
-            (samples.all_observation, samples.all_action, samples.all_reward),
-            device=self.agent.device)
-        wT, bT, nsr = self.warmup_T, self.batch_T, self.n_step_return
-        if wT > 0:
-            warmup_slice = slice(None, wT)  # Same for agent and target.
-            warmup_inputs = AgentInputs(
-                observation=all_observation[warmup_slice],
-                prev_action=all_action[warmup_slice],
-                prev_reward=all_reward[warmup_slice],
-            )
-        agent_slice = slice(wT, wT + bT)
-        agent_inputs = AgentInputs(
-            observation=all_observation[agent_slice],
-            prev_action=all_action[agent_slice],
-            prev_reward=all_reward[agent_slice],
-        )
-        target_slice = slice(wT, None)  # Same start t as agent. (wT + bT + nsr)
-        target_inputs = AgentInputs(
-            observation=all_observation[target_slice],
-            prev_action=all_action[target_slice],
-            prev_reward=all_reward[target_slice],
-        )
-        action = samples.all_action[wT + 1:wT + 1 + bT]  # CPU.
-        return_ = samples.return_[wT:wT + bT]
-        done_n = samples.done_n[wT:wT + bT]
-        if self.store_rnn_state_interval == 0:
-            init_rnn_state = None
-        else:
-            # [B,N,H]-->[N,B,H] cudnn.
-            init_rnn_state = buffer_method(samples.init_rnn_state, "transpose", 0, 1)
-            init_rnn_state = buffer_method(init_rnn_state, "contiguous")
-        if wT > 0:  # Do warmup.
-            with torch.no_grad():
-                _, target_rnn_state = self.agent.target(*warmup_inputs, init_rnn_state)
-                _, init_rnn_state = self.agent(*warmup_inputs, init_rnn_state)
-            # Recommend aligning sampling batch_T and store_rnn_interval with
-            # warmup_T (and no mid_batch_reset), so that end of trajectory
-            # during warmup leads to new trajectory beginning at start of
-            # training segment of replay.
-            warmup_invalid_mask = valid_from_done(samples.done[:wT])[-1] == 0  # [B]
-            init_rnn_state[:, warmup_invalid_mask] = 0  # [N,B,H] (cudnn)
-            target_rnn_state[:, warmup_invalid_mask] = 0
-        else:
-            target_rnn_state = init_rnn_state
-
-        qs, _ = self.agent(*agent_inputs, init_rnn_state)  # [T,B,A]
-        q = select_at_indexes(action, qs)
-        with torch.no_grad():
-            target_qs, _ = self.agent.target(*target_inputs, target_rnn_state)
-            if self.double_dqn:
-                next_qs, _ = self.agent(*target_inputs, init_rnn_state)
-                next_a = torch.argmax(next_qs, dim=-1)
-                target_q = select_at_indexes(next_a, target_qs)
-            else:
-                target_q = torch.max(target_qs, dim=-1).values
-            target_q = target_q[-bT:]  # Same length as q.
-
-        disc = self.discount ** self.n_step_return
-        y = self.value_scale(return_ + (1 - done_n.float()) * disc *
-                             self.inv_value_scale(target_q))  # [T,B]
-        delta = y - q
-        losses = 0.5 * delta ** 2
-        abs_delta = abs(delta)
-
-        # NOTE: by default, with R2D1, use squared-error loss, delta_clip=None.
-        if self.delta_clip is not None:  # Huber loss.
-            b = self.delta_clip * (abs_delta - self.delta_clip / 2)
-            losses = torch.where(abs_delta <= self.delta_clip, losses, b)
-        if self.prioritized_replay:
-            losses *= samples.is_weights.unsqueeze(0)  # weights: [B] --> [1,B]
-
-        valid = valid_from_done(samples.done[wT:])  # 0 after first done.
-        loss = valid_mean(losses, valid)
-        td_abs_errors = abs_delta.detach()
-        if self.delta_clip is not None:
-            td_abs_errors = torch.clamp(td_abs_errors, 0, self.delta_clip)  # [T,B]
-        valid_td_abs_errors = td_abs_errors * valid
-        max_d = torch.max(valid_td_abs_errors, dim=0).values
-        mean_d = valid_mean(td_abs_errors, valid, dim=0)  # Still high if less valid.
-        priorities = self.pri_eta * max_d + (1 - self.pri_eta) * mean_d  # [B]
-
-        return loss, valid_td_abs_errors, priorities
 
     def value_scale(self, x):
         """Value scaling function to handle raw rewards across games (not clipped)."""
