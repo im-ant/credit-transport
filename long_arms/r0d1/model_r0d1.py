@@ -60,6 +60,8 @@ class R0d1Model(torch.nn.Module):
         else:
             self.head = MlpModel(lstm_size, head_size, output_size=output_size)
 
+        print('model initialized', self)  # NOTE for debug purposes
+
     def forward(self, observation, prev_action, prev_reward, init_rnn_state):
         """Feedforward layers process as [T*B,H]. Return same leading dims as
         input, can be [T,B], [B], or []."""
