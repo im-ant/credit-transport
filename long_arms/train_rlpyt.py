@@ -88,6 +88,8 @@ def build_and_train(config: configparser.ConfigParser,
         'batch_T': config['Algorithm'].getint('algo_batch_T'),
         'store_rnn_state_interval': config['Algorithm'].getint('store_rnn_state_interval'),
         'batch_B': int(config['Algorithm'].getfloat('replay_batch_B')),
+        'replay_size': int(config['Algorithm'].getfloat('replay_buffer_size')),
+        'replay_ratio': config['Algorithm'].getint('replay_ratio'),
         'target_update_interval': int(config['Algorithm'].getfloat('target_update_interval')),
         'min_steps_learn': int(config['Algorithm'].getfloat('min_steps_learn')),
         'eps_steps': int(config['Algorithm'].getfloat('eps_steps')),
@@ -112,6 +114,8 @@ def build_and_train(config: configparser.ConfigParser,
         'head_size': config['Model'].getint('head_size'),
         'dueling': config['Model'].getboolean('dueling'),
     }
+
+    # print(model_kwargs)
 
     # =====
     # Set up logger
