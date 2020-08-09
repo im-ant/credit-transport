@@ -95,8 +95,6 @@ class R0D1(DQN):
         save__init__args(locals())
         self._batch_size = (self.batch_T + self.warmup_T) * self.batch_B
 
-        self.use_recurrence = True  # TODO delete later, dummy variable now
-
     def initialize_replay_buffer(self, examples, batch_spec, async_=False):
         """Similar to DQN but uses replay buffers which return sequences, and
         stores the agent's recurrent state."""
@@ -163,8 +161,6 @@ class R0D1(DQN):
         if itr < self.min_itr_learn:
             return opt_info
 
-        torch.autograd.set_detect_anomaly(True)  # TODO fix and delete
-
         # ==
         # Train
         for _ in range(self.updates_per_optimize):
@@ -227,6 +223,9 @@ class R0D1(DQN):
              samples.all_action.clone().detach(),
              samples.all_reward.clone().detach()),
             device=self.agent.device)
+
+        # all_action = torch.zeros(all_action.size())
+        # all_reward = torch.zeros(all_reward.size())  # TODO make this a feature in future?
 
         # Extract action, reward and done on CPU
         action = samples.all_action[1:self.batch_T + 1]
