@@ -33,6 +33,7 @@ class DelayedActionEnv(gym.Env):
     def __init__(self, num_arms=2,
                  action_delay_len=1,
                  corridor_length=5,
+                 prediction_only = False,
                  final_obs_aliased=False,
                  require_final_action=False,
                  img_size=(32, 32),
@@ -47,6 +48,7 @@ class DelayedActionEnv(gym.Env):
         self.action_delay_len = action_delay_len
         self.reward_delay_len = corridor_length
         self.num_arms = num_arms
+        self.prediction_only = prediction_only
         self.final_obs_aliased = final_obs_aliased
         self.require_final_action = require_final_action  # dummy var
 
@@ -221,6 +223,8 @@ class DelayedActionEnv(gym.Env):
                     self.state = (2, 1, cur_step + 1)
                 else:
                     self.state = (2, 2, cur_step + 1)
+                if self.prediction_only:
+                    self.state = (2, cur_arm, 1)  # stay in same arm
             # At the reward delay or pre-terminal state
             elif cur_step <= (self.reward_delay_len + 1):
                 self.state = (2, cur_arm, cur_step + 1)
@@ -260,7 +264,7 @@ class DelayedActionEnv(gym.Env):
 
         # Initial state
         if cur_stage == 0:
-            img = Image.new('RGB', (32, 32), color='black')  # black init
+            img = Image.new('RGB', (32, 32), color='purple')  # black init
         # First stage
         elif cur_stage == 1:
             # Picture viewing states
@@ -326,9 +330,9 @@ if __name__ == '__main__':
 
     env = DelayedActionEnv(num_arms=2,
                            action_delay_len=5,
-                           corridor_length=0,
+                           corridor_length=1,
                            final_obs_aliased=False,
-                           require_final_action=True,
+                           require_final_action=False,
                            img_size=(32, 32),
                            grayscale=False,
                            training=True,

@@ -67,6 +67,7 @@ def build_and_train(config: configparser.ConfigParser,
         'num_arms': config['Env'].getint('num_arms'),
         'action_delay_len': config['Env'].getint('action_delay_len'),
         'corridor_length': config['Env'].getint('corridor_length'),
+        'prediction_only': config['Env'].getboolean('prediction_only'),
         'final_obs_aliased': config['Env'].getboolean('final_obs_aliased'),
         'require_final_action': config['Env'].getboolean('require_final_action'),
         'img_size': (img_len, img_len),
@@ -114,8 +115,6 @@ def build_and_train(config: configparser.ConfigParser,
         'head_size': config['Model'].getint('head_size'),
         'dueling': config['Model'].getboolean('dueling'),
     }
-
-    # print(model_kwargs)
 
     # =====
     # Set up logger
