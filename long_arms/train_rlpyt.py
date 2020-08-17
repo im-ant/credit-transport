@@ -24,7 +24,8 @@ import torch
 
 from rlpyt.samplers.serial.sampler import SerialSampler
 from rlpyt.samplers.collections import TrajInfo
-from rlpyt.samplers.parallel.cpu.collectors import CpuWaitResetCollector
+from rlpyt.samplers.parallel.cpu.collectors import (CpuResetCollector,
+                                                    CpuWaitResetCollector)
 from rlpyt.samplers.serial.collectors import SerialEvalCollector
 from rlpyt.envs.gym import GymEnvWrapper
 from rlpyt.envs.atari.atari_env import AtariEnv, AtariTrajInfo
@@ -66,6 +67,7 @@ def build_and_train(config: configparser.ConfigParser,
         'num_arms': config['Env'].getint('num_arms'),
         'action_delay_len': config['Env'].getint('action_delay_len'),
         'corridor_length': config['Env'].getint('corridor_length'),
+        'prediction_only': config['Env'].getboolean('prediction_only'),
         'final_obs_aliased': config['Env'].getboolean('final_obs_aliased'),
         'require_final_action': config['Env'].getboolean('require_final_action'),
         'img_size': (img_len, img_len),
@@ -84,6 +86,11 @@ def build_and_train(config: configparser.ConfigParser,
     algo_kwargs = {
         'discount': config['Algorithm'].getfloat('discount'),
         'lambda_coef': config['Algorithm'].getfloat('lambda_coef'),
+        'batch_T': config['Algorithm'].getint('algo_batch_T'),
+        'store_rnn_state_interval': config['Algorithm'].getint('store_rnn_state_interval'),
+        'batch_B': int(config['Algorithm'].getfloat('replay_batch_B')),
+        'replay_size': int(config['Algorithm'].getfloat('replay_buffer_size')),
+        'replay_ratio': config['Algorithm'].getint('replay_ratio'),
         'target_update_interval': int(config['Algorithm'].getfloat('target_update_interval')),
         'min_steps_learn': int(config['Algorithm'].getfloat('min_steps_learn')),
         'eps_steps': int(config['Algorithm'].getfloat('eps_steps')),
@@ -117,6 +124,7 @@ def build_and_train(config: configparser.ConfigParser,
         'name': config['Training']['exp_name'],
         'run_ID': config['Training'].getint('seed'),
         'snapshot_mode': config['Training']['log_snapshot_mode'],
+        'use_summary_writer': config['Training'].getboolean('log_use_summary_writer'),
     }
 
     # ==========
@@ -128,7 +136,7 @@ def build_and_train(config: configparser.ConfigParser,
     sampler = SerialSampler(
         EnvCls=env_f,
         TrajInfoCls=TrajInfo,  # collect default trajectory info
-        CollectorCls=CpuWaitResetCollector,  # each batch only has at most 1 episode
+        CollectorCls=CpuResetCollector,  # [CpuWaitResetCollector, CpuResetCollector]
         env_kwargs=env_args,
         batch_T=config['Training'].getint('sampler_batch_T'),  # seq length of per batch of sampled data
         batch_B=1,
