@@ -33,9 +33,11 @@ class DelayedActionEnv(gym.Env):
     def __init__(self, num_arms=2,
                  action_delay_len=1,
                  corridor_length=5,
-                 prediction_only = False,
+                 prediction_only=False,
                  final_obs_aliased=False,
                  require_final_action=False,
+                 reward_stdev=0.1,
+                 num_ds_imgs=5,
                  img_size=(32, 32),
                  grayscale=True,
                  flatten_obs=False,
@@ -45,19 +47,27 @@ class DelayedActionEnv(gym.Env):
 
         # ==
         # Attributes
+
+        # State variables
         self.action_delay_len = action_delay_len
         self.reward_delay_len = corridor_length
         self.num_arms = num_arms
         self.prediction_only = prediction_only
         self.final_obs_aliased = final_obs_aliased
-        self.require_final_action = require_final_action  # dummy var
+        self.require_final_action = require_final_action  # dummy var now
 
+        # Reward variables
+        self.reward_stdev = reward_stdev
+
+        # Dataset variables
+        self.training = training
+        self.num_ds_imgs = num_ds_imgs  # n images to show at start of arm
+
+        # Observation variables
         self.img_size = img_size
         self.grayscale = grayscale
         self.flatten_obs = flatten_obs
         self.scale_observation = scale_observation
-
-        self.training = training
 
         # ==
         # Get dataset of images
@@ -95,7 +105,6 @@ class DelayedActionEnv(gym.Env):
             'choice_1': 'dog',
             'choice_2': 'cat',
             'corridor': 'bird',
-            'final': 'deer',
         }
 
         # ==
@@ -115,6 +124,14 @@ class DelayedActionEnv(gym.Env):
             for k in class_dict:
                 if cur_cifar_class == cifar_class_dict[k]:
                     cifar_indexes[k].append(i)
+
+        # Manually sub-sample choice classes
+        for k in ['choice_1', 'choice_2']:
+            n_imgs = min(self.num_ds_imgs, len(cifar_indexes[k]))
+            rng = np.random.default_rng()
+            choice_imgs = rng.choice(cifar_indexes[k], size=n_imgs,
+                                     replace=False)
+            cifar_indexes[k] = choice_imgs
 
         # ==
         # Construct the data subset dictionary
@@ -207,7 +224,7 @@ class DelayedActionEnv(gym.Env):
         # If at the very first stage, randomly go to one of the arms
         if cur_stage == 0:
             # Randomly transition to 1 or 2
-            arm_num = np.random.choice([1, 2])
+            arm_num = np.random.default_rng().choice([1, 2])
             self.state = (1, arm_num, 0)
         # In the first (picture viewing) stage
         elif cur_stage == 1:
@@ -264,15 +281,13 @@ class DelayedActionEnv(gym.Env):
 
         # Initial state
         if cur_stage == 0:
-            img = Image.new('RGB', (32, 32), color='purple')  # black init
+            img = Image.new('RGB', (32, 32), color='purple')  # purple init
         # First stage
         elif cur_stage == 1:
             # Picture viewing states
             if cur_step == 0:
-                rand_idx = np.random.randint(low=10,
-                                             high=15)  # TODO: change to all imgs?
-                # TODO in general can be made more general somehow, e.g. via
-                # sampling a pre-specific subset of images (up to limit)
+                rng = np.random.default_rng()
+                rand_idx = rng.integers(len(self.ds_dict['choice_1']))
                 if cur_arm == 1:
                     img = self.ds_dict['choice_1'][rand_idx][0]
                 else:
@@ -288,8 +303,8 @@ class DelayedActionEnv(gym.Env):
                 img = Image.new('RGB', (32, 32), color='blue')
             # Delay reward hallway states
             elif cur_step <= self.reward_delay_len:
-                rand_idx = np.random.randint(low=0,
-                                             high=len(self.ds_dict['corridor']))
+                rng = np.random.default_rng()
+                rand_idx = rng.integers(len(self.ds_dict['corridor']))
                 img = self.ds_dict['corridor'][rand_idx][0]
             # Pre-terminal state
             elif cur_step == (self.reward_delay_len + 1):
@@ -300,10 +315,11 @@ class DelayedActionEnv(gym.Env):
             else:
                 img = self.prev_img
                 done = True
+                noise = np.random.default_rng().normal(0, self.reward_stdev)
                 if cur_arm == 1:
-                    reward = 1.0
+                    reward = 1.0 + noise
                 else:
-                    reward = -1.0
+                    reward = -1.0 + noise
 
         return img, reward, done, {}
 
