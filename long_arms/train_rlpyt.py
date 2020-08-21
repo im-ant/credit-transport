@@ -30,13 +30,12 @@ from rlpyt.samplers.serial.collectors import SerialEvalCollector
 from rlpyt.envs.gym import GymEnvWrapper
 from rlpyt.envs.atari.atari_env import AtariEnv, AtariTrajInfo
 from rlpyt.agents.dqn.r2d1_agent import R2d1Agent
-from rlpyt.models.dqn.atari_r2d1_model import AtariR2d1Model
-from rlpyt.models.dqn.atari_dqn_model import AtariDqnModel
 from rlpyt.runners.minibatch_rl import MinibatchRl, MinibatchRlEval
 from rlpyt.utils.logging.context import logger_context
 
 from r0d1.algo_r0d1 import R0D1
 from r0d1.model_r0d1 import R0d1Model
+from r0d1.model_gru import GRUModel
 from envs.long_arms import LongArmsEnv
 from envs.logical_arms import LogicalArmsEnv
 from envs.delayed_action import DelayedActionEnv
@@ -153,7 +152,7 @@ def build_and_train(config: configparser.ConfigParser,
     algo = R0D1(**algo_kwargs)
     agent = R2d1Agent(eps_init=config['Algorithm'].getfloat('eps_init'),
                       eps_final=config['Algorithm'].getfloat('eps_final'),
-                      ModelCls=R0d1Model,
+                      ModelCls=GRUModel,  # [GRUModel, R0d1Model]  # TODO change to R0d1
                       model_kwargs=model_kwargs)
 
     # ==========

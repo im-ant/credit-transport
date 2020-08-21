@@ -21,6 +21,7 @@ OptInfo = namedtuple("OptInfo", ["loss", "gradNorm",
                                  "init_abs_delta", "t2_abs_delta", "final_abs_delta",
                                  "tneg2_q_min", "tneg2_q_max",
                                  "final_q_min", "final_q_max",
+                                 "avg_grad_intf",
                                  "tdAbsErr", "priority"])
 
 SamplesToBufferRnn = namedarraytuple("SamplesToBufferRnn",
@@ -170,11 +171,36 @@ class R0D1(DQN):
             # One training step
             self.optimizer.zero_grad()
             loss, info_dict = self.loss(buffer_samples)
+
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.agent.parameters(), self.clip_grad_norm
             )
             self.optimizer.step()
+
+            # Optionally compute and log gradient statistics
+            log_gradients = True
+            if log_gradients and self.agent.model.use_recurrence:
+                # Extract the tensor of gradients (in the valid interval)
+                pred_grad_list = [self.agent.model.prev_hs_pre_grad[i] for
+                                  i in range(self.store_rnn_state_interval)]
+                recu_grad_list = [self.agent.model.prev_hs_rec_grad[i] for
+                                  i in range(self.store_rnn_state_interval)]
+                pred_grads = torch.cat(pred_grad_list, dim=0)  # [T, B, d]
+                recu_grads = torch.cat(recu_grad_list, dim=0)  # [T, B, d]
+
+                # Compute the dot products
+                # TODO how do I know the reshaping is done correctly for batch dot??
+                (gT, gB, gD) = pred_grads.size()
+                intf = torch.matmul(pred_grads.view(gT*gB, 1, gD),
+                                    recu_grads.view(gT*gB, gD, 1))  # [T*B, 1]
+                intf = intf.view(gT, gB)
+                # Average along batch and across batch + time
+                avg_perT_intf = torch.mean(intf, dim=1)
+                avg_intf = torch.mean(intf)
+
+                # Logging the gradient interference statistics
+                opt_info.avg_grad_intf.append(avg_intf.item())
 
             # Logging information
             opt_info.loss.append(loss.item())
@@ -338,11 +364,11 @@ class R0D1(DQN):
         gamma = self.discount
 
         # Compute lambda return via dynamic programming
-        for t in reversed(range(lamb_G.size(0)-1)):
-            G_t = (r_traj[t, :] + (valid[t+1, :] * (
-                    ((1 - lamb) * gamma * v_traj[t+1, :]) +
-                    (lamb * gamma * lamb_G[t+1, :]))
-            ))
+        for t in reversed(range(lamb_G.size(0) - 1)):
+            G_t = (r_traj[t, :] + (valid[t + 1, :] * (
+                    ((1 - lamb) * gamma * v_traj[t + 1, :]) +
+                    (lamb * gamma * lamb_G[t + 1, :]))
+                                   ))
             lamb_G[t, :] = G_t * valid[t, :]
 
         return lamb_G
