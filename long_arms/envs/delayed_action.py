@@ -35,6 +35,7 @@ class DelayedActionEnv(gym.Env):
                  corridor_length=5,
                  prediction_only=False,
                  final_obs_aliased=False,
+                 fully_observable=False,
                  require_final_action=False,
                  reward_stdev=0.1,
                  num_ds_imgs=5,
@@ -54,6 +55,7 @@ class DelayedActionEnv(gym.Env):
         self.num_arms = num_arms
         self.prediction_only = prediction_only
         self.final_obs_aliased = final_obs_aliased
+        self.fully_observable = fully_observable
         self.require_final_action = require_final_action  # dummy var now
 
         # Reward variables
@@ -321,6 +323,14 @@ class DelayedActionEnv(gym.Env):
                 else:
                     reward = -1.0 + noise
 
+        # Make things fully observable by having a diff image for each state
+        if self.fully_observable and (not((cur_stage == 1)
+                                          and (cur_step == 0))):
+            # NOTE: hacky, TODO in the future should use hashing
+            fulobs_idx = int(self.state[0] * 100 + self.state[1] * 10 +
+                             self.state[2])
+            img = self.ds_dict['corridor'][fulobs_idx][0]
+
         return img, reward, done, {}
 
     def render(self):
@@ -347,8 +357,9 @@ if __name__ == '__main__':
     env = DelayedActionEnv(num_arms=2,
                            action_delay_len=5,
                            corridor_length=1,
+                           prediction_only=True,
                            final_obs_aliased=False,
-                           require_final_action=False,
+                           fully_observable=True,
                            img_size=(32, 32),
                            grayscale=False,
                            training=True,
