@@ -16,11 +16,12 @@ from rlpyt.utils.buffer import buffer_to, buffer_method, torchify_buffer
 
 # TODO: update this
 OptInfo = namedtuple("OptInfo", ["loss", "gradNorm",
-                                 "init_q_min", "init_q_max",
-                                 "init_td_delta", "t2_td_delta", "final_td_delta",
-                                 "init_abs_delta", "t2_abs_delta", "final_abs_delta",
-                                 "tneg2_q_min", "tneg2_q_max",
+                                 "t1_q_min", "t1_q_max", "t2_q_min", "t2_q_max",
+                                 "t3_q_min", "t3_q_max", "tneg2_q_min", "tneg2_q_max",
                                  "final_q_min", "final_q_max",
+                                 "t2_td_delta", "t2_abs_delta",
+                                 "final_td_delta", "final_abs_delta",
+                                 "t2_grad_intf", "tneg2_grad_intf", "final_grad_intf",
                                  "avg_grad_intf",
                                  "tdAbsErr", "priority"])
 
@@ -200,24 +201,20 @@ class R0D1(DQN):
                 avg_intf = torch.mean(intf)
 
                 # Logging the gradient interference statistics
-                opt_info.avg_grad_intf.append(avg_intf.item())
+                getattr(opt_info, "t2_grad_intf").append(avg_perT_intf[1].item())
+                getattr(opt_info, "tneg2_grad_intf").append(avg_perT_intf[-2].item())
+                getattr(opt_info, "final_grad_intf").append(avg_perT_intf[-1].item())
+                getattr(opt_info, "avg_grad_intf").append(avg_intf.item())
 
             # Logging information
             opt_info.loss.append(loss.item())
             opt_info.gradNorm.append(grad_norm.clone().detach().item())
-            opt_info.init_td_delta.append(info_dict['init_td_delta'].item())  # td delta estimates
-            opt_info.t2_td_delta.append(info_dict['t2_td_delta'].item())
-            opt_info.final_td_delta.append(info_dict['final_td_delta'].item())
-            opt_info.init_abs_delta.append(info_dict['init_abs_delta'])
-            opt_info.t2_abs_delta.append(info_dict['t2_abs_delta'])
-            opt_info.final_abs_delta.append(info_dict['final_abs_delta'])
-            opt_info.init_q_min.append(info_dict['init_q_min'].item())  # q estimates
-            opt_info.init_q_max.append(info_dict['init_q_max'].item())
-            opt_info.tneg2_q_min.append(info_dict['tneg2_q_min'].item())
-            opt_info.tneg2_q_max.append(info_dict['tneg2_q_max'].item())
-            opt_info.final_q_min.append(info_dict['final_q_min'].item())
-            opt_info.final_q_max.append(info_dict['final_q_max'].item())
-            opt_info.tdAbsErr.extend(info_dict['valid_td_abs_errors'][::8].numpy())
+
+            for k in info_dict:
+                if not hasattr(opt_info, k):
+                    continue
+                # Add to NamedTuple
+                getattr(opt_info, k).append(info_dict[k].item())
 
             # Update counter
             self.update_counter += 1
@@ -327,8 +324,13 @@ class R0D1(DQN):
         # Store the q estimates (of the first sample in batch)
         qs_tensor = qs.clone().detach()  # [sample_T, sample_B, A]
         qs_tensor = qs_tensor[0:valid_t, :, :]  # [valid_t, sample_B, A]
-        info_dict['init_q_min'] = torch.min(qs_tensor[0, 0, :])
-        info_dict['init_q_max'] = torch.max(qs_tensor[0, 0, :])
+
+        info_dict['t1_q_min'] = torch.min(qs_tensor[0, 0, :])
+        info_dict['t1_q_max'] = torch.max(qs_tensor[0, 0, :])
+        info_dict['t2_q_min'] = torch.min(qs_tensor[1, 0, :])
+        info_dict['t2_q_max'] = torch.max(qs_tensor[1, 0, :])
+        info_dict['t3_q_min'] = torch.min(qs_tensor[2, 0, :])
+        info_dict['t3_q_max'] = torch.max(qs_tensor[2, 0, :])
         info_dict['tneg2_q_min'] = torch.min(qs_tensor[-2, 0, :])
         info_dict['tneg2_q_max'] = torch.max(qs_tensor[-2, 0, :])
         info_dict['final_q_min'] = torch.min(qs_tensor[-1, 0, :])
@@ -337,14 +339,12 @@ class R0D1(DQN):
         delta_cp = delta.clone().detach()[0:valid_t]
         delta_tensor = torch.mean(delta_cp, dim=1)
         abs_delta_tensor = torch.mean(torch.abs(delta_cp), dim=1)
-        info_dict['init_td_delta'] = delta_tensor[0]
-        info_dict['init_abs_delta'] = abs_delta_tensor[0]
         info_dict['t2_td_delta'] = delta_tensor[1]
         info_dict['t2_abs_delta'] = abs_delta_tensor[1]
         info_dict['final_td_delta'] = delta_tensor[-1]
         info_dict['final_abs_delta'] = abs_delta_tensor[-1]
         # All abs errors
-        info_dict['valid_td_abs_errors'] = td_abs_errors * valid
+        # info_dict['valid_td_abs_errors'] = td_abs_errors * valid
 
         return loss, info_dict
 
