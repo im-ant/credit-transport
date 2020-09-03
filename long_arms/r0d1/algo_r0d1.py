@@ -23,8 +23,12 @@ OptInfo = namedtuple("OptInfo", ["loss", "gradNorm",
                                  "t2_true_abs_delta", "t3_true_abs_delta",
                                  "tneg2_true_abs_delta", "final_true_abs_delta",
                                  "avg_true_abs_delta",
-                                 "t2_grad_intf", "tneg2_grad_intf", "final_grad_intf",
-                                 "avg_grad_intf",
+                                 "t2_grad_bptt_norm", "t2_grad_curt_norm",
+                                 "tneg2_grad_bptt_norm", "tneg2_grad_curt_norm",
+                                 "final_grad_bptt_norm", "final_grad_curt_norm",
+                                 "avg_grad_bptt_norm", "avg_grad_curt_norm",
+                                 "t2_grad_cossim", "tneg2_grad_cossim",
+                                 "final_grad_cossim", "avg_grad_cossim",
                                  "tdAbsErr", "priority"])
 
 SamplesToBufferRnn = namedarraytuple("SamplesToBufferRnn",
@@ -202,21 +206,35 @@ class R0D1(DQN):
                 pred_grads = torch.cat(pred_grad_list, dim=0)  # [T, B, d]
                 recu_grads = torch.cat(recu_grad_list, dim=0)  # [T, B, d]
 
-                # Compute the dot products
-                # TODO how do I know the reshaping is done correctly for batch dot??
-                (gT, gB, gD) = pred_grads.size()
-                intf = torch.matmul(pred_grads.view(gT*gB, 1, gD),
-                                    recu_grads.view(gT*gB, gD, 1))  # [T*B, 1]
-                intf = intf.view(gT, gB)
-                # Average along batch and across batch + time
-                avg_perT_intf = torch.mean(intf, dim=1)
-                avg_intf = torch.mean(intf)
+                # Compute the gradient norms of this minibatch
+                curT_grad_norms = torch.norm(pred_grads, dim=2)  # [T, B]
+                curT_grad_norms = torch.mean(curT_grad_norms, dim=1)  # [T]
+                avg_curT_grad_norms = torch.mean(curT_grad_norms)
+                bptT_grad_norms = torch.norm(recu_grads, dim=2)  # [T, B]
+                bptT_grad_norms = torch.mean(bptT_grad_norms, dim=1)  # [T]
+                avg_bptT_grad_norms = torch.mean(bptT_grad_norms)
+
+                # Compute the cosine similarity
+                cosnn = torch.nn.CosineSimilarity(dim=2, eps=1e-10)
+                cossim = cosnn(pred_grads, recu_grads)  # [T, B]
+                cossim = torch.mean(cossim, dim=1)  # [T]
+                avg_cossim = torch.mean(cossim)
 
                 # Logging the gradient interference statistics
-                getattr(opt_info, "t2_grad_intf").append(avg_perT_intf[1].item())
-                getattr(opt_info, "tneg2_grad_intf").append(avg_perT_intf[-2].item())
-                getattr(opt_info, "final_grad_intf").append(avg_perT_intf[-1].item())
-                getattr(opt_info, "avg_grad_intf").append(avg_intf.item())
+                getattr(opt_info, "t2_grad_curt_norm").append(curT_grad_norms[1].item())
+                getattr(opt_info, "tneg2_grad_curt_norm").append(curT_grad_norms[-2].item())
+                getattr(opt_info, "final_grad_curt_norm").append(curT_grad_norms[-1].item())
+                getattr(opt_info, "avg_grad_curt_norm").append(avg_curT_grad_norms.item())
+
+                getattr(opt_info, "t2_grad_bptt_norm").append(bptT_grad_norms[1].item())
+                getattr(opt_info, "tneg2_grad_bptt_norm").append(bptT_grad_norms[-2].item())
+                getattr(opt_info, "final_grad_bptt_norm").append(bptT_grad_norms[-1].item())
+                getattr(opt_info, "avg_grad_bptt_norm").append(avg_bptT_grad_norms.item())
+
+                getattr(opt_info, "t2_grad_cossim").append(cossim[1].item())
+                getattr(opt_info, "tneg2_grad_cossim").append(cossim[-2].item())
+                getattr(opt_info, "final_grad_cossim").append(cossim[-1].item())
+                getattr(opt_info, "avg_grad_cossim").append(avg_cossim.item())
 
             # Logging information
             opt_info.loss.append(loss.item())
