@@ -432,6 +432,8 @@ class R0D1(DQN):
 
         # ==
         # Compute true return (highly specific to the delay action.py env)
+        # NOTE: this is built specifically for the action independent, pure
+        #       prediction variant of the delayed_actions.py env
         arm_num = int(samples.env.env_info.arm_num[(valid_T-1)])
         true_R = 1.0 if (arm_num == 1) else -1.0
 
