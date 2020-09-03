@@ -16,16 +16,25 @@ from rlpyt.utils.buffer import buffer_to, buffer_method, torchify_buffer
 
 # TODO: update this
 OptInfo = namedtuple("OptInfo", ["loss", "gradNorm",
-                                 "init_q_min", "init_q_max",
-                                 "init_td_delta", "t2_td_delta", "final_td_delta",
-                                 "init_abs_delta", "t2_abs_delta", "final_abs_delta",
-                                 "tneg2_q_min", "tneg2_q_max",
+                                 "t1_q_min", "t1_q_max", "t2_q_min", "t2_q_max",
+                                 "t3_q_min", "t3_q_max", "tneg2_q_min", "tneg2_q_max",
                                  "final_q_min", "final_q_max",
-                                 "avg_grad_intf",
+                                 "t2_abs_delta", "final_abs_delta",
+                                 "t2_true_abs_delta", "t3_true_abs_delta",
+                                 "tneg2_true_abs_delta", "final_true_abs_delta",
+                                 "avg_true_abs_delta",
+                                 "t2_grad_bptt_norm", "t2_grad_curt_norm",
+                                 "tneg2_grad_bptt_norm", "tneg2_grad_curt_norm",
+                                 "final_grad_bptt_norm", "final_grad_curt_norm",
+                                 "avg_grad_bptt_norm", "avg_grad_curt_norm",
+                                 "t2_grad_cossim", "tneg2_grad_cossim",
+                                 "final_grad_cossim", "avg_grad_cossim",
                                  "tdAbsErr", "priority"])
 
 SamplesToBufferRnn = namedarraytuple("SamplesToBufferRnn",
-                                     SamplesToBuffer._fields + ("prev_rnn_state",))
+                                     SamplesToBuffer._fields + (
+                                         "prev_rnn_state",
+                                     ))
 PrioritiesSamplesToBuffer = namedarraytuple("PrioritiesSamplesToBuffer",
                                             ["priorities", "samples"])
 
@@ -105,10 +114,12 @@ class R0D1(DQN):
             reward=examples["reward"],
             done=examples["done"],
         )
+
         if self.store_rnn_state_interval > 0:
-            example_to_buffer = SamplesToBufferRnn(*example_to_buffer,
-                                                   prev_rnn_state=examples["agent_info"].prev_rnn_state,
-                                                   )
+            example_to_buffer = SamplesToBufferRnn(
+                *example_to_buffer,
+                prev_rnn_state=examples["agent_info"].prev_rnn_state,
+            )
 
         replay_kwargs = dict(
             example=example_to_buffer,
@@ -135,8 +146,10 @@ class R0D1(DQN):
     def samples_to_buffer(self, samples):
         samples_to_buffer = super().samples_to_buffer(samples)
         if self.store_rnn_state_interval > 0:
-            samples_to_buffer = SamplesToBufferRnn(*samples_to_buffer,
-                                                   prev_rnn_state=samples.agent.agent_info.prev_rnn_state)
+            samples_to_buffer = SamplesToBufferRnn(
+                *samples_to_buffer,
+                prev_rnn_state=samples.agent.agent_info.prev_rnn_state,
+            )
         if self.input_priorities:
             priorities = self.compute_input_priorities(samples)
             samples_to_buffer = PrioritiesSamplesToBuffer(
@@ -161,6 +174,10 @@ class R0D1(DQN):
         opt_info = OptInfo(*([] for _ in range(len(OptInfo._fields))))
         if itr < self.min_itr_learn:
             return opt_info
+
+        # For evaluation only: compute the delta to true value prediction
+        true_sample_delta = self.compute_true_delta(samples)
+        true_abs_delta = abs(true_sample_delta)
 
         # ==
         # Train
@@ -189,35 +206,51 @@ class R0D1(DQN):
                 pred_grads = torch.cat(pred_grad_list, dim=0)  # [T, B, d]
                 recu_grads = torch.cat(recu_grad_list, dim=0)  # [T, B, d]
 
-                # Compute the dot products
-                # TODO how do I know the reshaping is done correctly for batch dot??
-                (gT, gB, gD) = pred_grads.size()
-                intf = torch.matmul(pred_grads.view(gT*gB, 1, gD),
-                                    recu_grads.view(gT*gB, gD, 1))  # [T*B, 1]
-                intf = intf.view(gT, gB)
-                # Average along batch and across batch + time
-                avg_perT_intf = torch.mean(intf, dim=1)
-                avg_intf = torch.mean(intf)
+                # Compute the gradient norms of this minibatch
+                curT_grad_norms = torch.norm(pred_grads, dim=2)  # [T, B]
+                curT_grad_norms = torch.mean(curT_grad_norms, dim=1)  # [T]
+                avg_curT_grad_norms = torch.mean(curT_grad_norms)
+                bptT_grad_norms = torch.norm(recu_grads, dim=2)  # [T, B]
+                bptT_grad_norms = torch.mean(bptT_grad_norms, dim=1)  # [T]
+                avg_bptT_grad_norms = torch.mean(bptT_grad_norms)
+
+                # Compute the cosine similarity
+                cosnn = torch.nn.CosineSimilarity(dim=2, eps=1e-10)
+                cossim = cosnn(pred_grads, recu_grads)  # [T, B]
+                cossim = torch.mean(cossim, dim=1)  # [T]
+                avg_cossim = torch.mean(cossim)
 
                 # Logging the gradient interference statistics
-                opt_info.avg_grad_intf.append(avg_intf.item())
+                getattr(opt_info, "t2_grad_curt_norm").append(curT_grad_norms[1].item())
+                getattr(opt_info, "tneg2_grad_curt_norm").append(curT_grad_norms[-2].item())
+                getattr(opt_info, "final_grad_curt_norm").append(curT_grad_norms[-1].item())
+                getattr(opt_info, "avg_grad_curt_norm").append(avg_curT_grad_norms.item())
+
+                getattr(opt_info, "t2_grad_bptt_norm").append(bptT_grad_norms[1].item())
+                getattr(opt_info, "tneg2_grad_bptt_norm").append(bptT_grad_norms[-2].item())
+                getattr(opt_info, "final_grad_bptt_norm").append(bptT_grad_norms[-1].item())
+                getattr(opt_info, "avg_grad_bptt_norm").append(avg_bptT_grad_norms.item())
+
+                getattr(opt_info, "t2_grad_cossim").append(cossim[1].item())
+                getattr(opt_info, "tneg2_grad_cossim").append(cossim[-2].item())
+                getattr(opt_info, "final_grad_cossim").append(cossim[-1].item())
+                getattr(opt_info, "avg_grad_cossim").append(avg_cossim.item())
 
             # Logging information
             opt_info.loss.append(loss.item())
             opt_info.gradNorm.append(grad_norm.clone().detach().item())
-            opt_info.init_td_delta.append(info_dict['init_td_delta'].item())  # td delta estimates
-            opt_info.t2_td_delta.append(info_dict['t2_td_delta'].item())
-            opt_info.final_td_delta.append(info_dict['final_td_delta'].item())
-            opt_info.init_abs_delta.append(info_dict['init_abs_delta'])
-            opt_info.t2_abs_delta.append(info_dict['t2_abs_delta'])
-            opt_info.final_abs_delta.append(info_dict['final_abs_delta'])
-            opt_info.init_q_min.append(info_dict['init_q_min'].item())  # q estimates
-            opt_info.init_q_max.append(info_dict['init_q_max'].item())
-            opt_info.tneg2_q_min.append(info_dict['tneg2_q_min'].item())
-            opt_info.tneg2_q_max.append(info_dict['tneg2_q_max'].item())
-            opt_info.final_q_min.append(info_dict['final_q_min'].item())
-            opt_info.final_q_max.append(info_dict['final_q_max'].item())
-            opt_info.tdAbsErr.extend(info_dict['valid_td_abs_errors'][::8].numpy())
+
+            for k in info_dict:
+                if not hasattr(opt_info, k):
+                    continue
+                # Add to NamedTuple
+                getattr(opt_info, k).append(info_dict[k].item())
+
+            getattr(opt_info, "t2_true_abs_delta").append(true_abs_delta[1].item())
+            getattr(opt_info, "t3_true_abs_delta").append(true_abs_delta[2].item())
+            getattr(opt_info, "tneg2_true_abs_delta").append(true_abs_delta[-2].item())
+            getattr(opt_info, "final_true_abs_delta").append(true_abs_delta[-1].item())
+            getattr(opt_info, "avg_true_abs_delta").append(torch.mean(true_abs_delta).item())
 
             # Update counter
             self.update_counter += 1
@@ -327,8 +360,13 @@ class R0D1(DQN):
         # Store the q estimates (of the first sample in batch)
         qs_tensor = qs.clone().detach()  # [sample_T, sample_B, A]
         qs_tensor = qs_tensor[0:valid_t, :, :]  # [valid_t, sample_B, A]
-        info_dict['init_q_min'] = torch.min(qs_tensor[0, 0, :])
-        info_dict['init_q_max'] = torch.max(qs_tensor[0, 0, :])
+
+        info_dict['t1_q_min'] = torch.min(qs_tensor[0, 0, :])
+        info_dict['t1_q_max'] = torch.max(qs_tensor[0, 0, :])
+        info_dict['t2_q_min'] = torch.min(qs_tensor[1, 0, :])
+        info_dict['t2_q_max'] = torch.max(qs_tensor[1, 0, :])
+        info_dict['t3_q_min'] = torch.min(qs_tensor[2, 0, :])
+        info_dict['t3_q_max'] = torch.max(qs_tensor[2, 0, :])
         info_dict['tneg2_q_min'] = torch.min(qs_tensor[-2, 0, :])
         info_dict['tneg2_q_max'] = torch.max(qs_tensor[-2, 0, :])
         info_dict['final_q_min'] = torch.min(qs_tensor[-1, 0, :])
@@ -337,14 +375,10 @@ class R0D1(DQN):
         delta_cp = delta.clone().detach()[0:valid_t]
         delta_tensor = torch.mean(delta_cp, dim=1)
         abs_delta_tensor = torch.mean(torch.abs(delta_cp), dim=1)
-        info_dict['init_td_delta'] = delta_tensor[0]
-        info_dict['init_abs_delta'] = abs_delta_tensor[0]
-        info_dict['t2_td_delta'] = delta_tensor[1]
         info_dict['t2_abs_delta'] = abs_delta_tensor[1]
-        info_dict['final_td_delta'] = delta_tensor[-1]
         info_dict['final_abs_delta'] = abs_delta_tensor[-1]
         # All abs errors
-        info_dict['valid_td_abs_errors'] = td_abs_errors * valid
+        # info_dict['valid_td_abs_errors'] = td_abs_errors * valid
 
         return loss, info_dict
 
@@ -372,6 +406,67 @@ class R0D1(DQN):
             lamb_G[t, :] = G_t * valid[t, :]
 
         return lamb_G
+
+    def compute_true_delta(self, samples):
+        """
+        Helper method with no training purpose. Only purpose is to compute the
+        "true" return as samples come in, make the current Q estimate and
+        see what the difference is (i.e. for evaluation and logging only)
+
+        NOTE: if multiple trajectories are collected in a single sample,
+              only the first trajectory will be used.
+        :param samples: samples from environment sampler
+        :return: tensor of delta between true G and predicted Q
+        """
+
+        # Extract information to estimate Q
+        all_observation, all_action, all_reward = buffer_to(
+            (samples.env.observation.clone().detach(),
+             samples.agent.prev_action.clone().detach(),
+             samples.env.prev_reward.clone().detach()),
+            device=self.agent.device)
+        action = samples.agent.prev_action[1:self.batch_T + 1]
+        done_n = samples.env.done[0:self.batch_T]
+
+        agent_slice = slice(0, self.batch_T)
+        agent_inputs = AgentInputs(
+            observation=all_observation[agent_slice].clone().detach(),
+            prev_action=all_action[agent_slice].clone().detach(),
+            prev_reward=all_reward[agent_slice].clone().detach(),
+        )
+
+        # Note: no RNN initial states (NOTE: might be a bug later if I
+        #       want to use partial trajectories)
+        init_rnn_state = None
+
+        # Estimate Q
+        with torch.no_grad():
+            qs, _ = self.agent(*agent_inputs, init_rnn_state)  # [T,B,A]
+            q = select_at_indexes(action, qs)
+
+        # Valid length
+        valid = valid_from_done(done_n)
+        valid_T = int(torch.sum(valid))
+
+        # ==
+        # Compute true return (highly specific to the delay action.py env)
+        # NOTE: this is built specifically for the action independent, pure
+        #       prediction variant of the delayed_actions.py env
+        arm_num = int(samples.env.env_info.arm_num[(valid_T-1)])
+        true_R = 1.0 if (arm_num == 1) else -1.0
+
+        true_G = torch.zeros((valid_T, 1))
+        true_G[-1] = true_R
+        for i in reversed(range(valid_T-1)):
+            true_G[i] = self.discount * true_G[i+1]
+        true_G[0] = 0.0  # first state has expected 0
+
+        # ==
+        # Compute delta to true value
+        true_delta = true_G - q[:valid_T]
+
+        return true_delta
+
 
     # ==
     # Below is old code
