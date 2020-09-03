@@ -331,7 +331,14 @@ class DelayedActionEnv(gym.Env):
                              self.state[2])
             img = self.ds_dict['corridor'][fulobs_idx][0]
 
-        return img, reward, done, {}
+        # Construct info (for algo evaluation only)
+        info = {
+            'stage_num': self.state[0],
+            'arm_num': self.state[1],
+            'step_num': self.state[2],
+        }
+
+        return img, reward, done, info
 
     def render(self):
         """
