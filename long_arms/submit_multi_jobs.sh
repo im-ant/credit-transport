@@ -4,11 +4,11 @@
 
 
 # Optional: message to put into the created directory? TODO fix this
-dir_message="Delay action arm, policy evalution with final observation aliasing, compare LSTM vs. MLP"
+dir_message="Partially obs environement to evluate lambda return diff length and lambda, re-run with longer steps till convergence"
 
 # The parent experimental directory, each experiment will be stored as a sub-
 # directory within this directory
-dir_path="/network/tmp1/chenant/ant/cred_transport/long_arms/08-04/exp1_rep"
+dir_path="/network/tmp1/chenant/ant/cred_transport/long_arms/09-04/exp2_diff_dl_rerun"
 
 # Path to the parent directory containing the configuration files, one per
 # experiment. Experiment folder will be named after the config file names
@@ -21,7 +21,8 @@ job_file="/home/mila/c/chenant/repos/credit-transport/long_arms/arg-job_train-lo
 partition_per_job="main,long"
 
 # Job resource (same for all jobs)
-gres_per_job="gpu:1"
+# pascal: [titanx, titanxp]; turing: [titanrtx, rtx8000];
+gres_per_job="gpu:pascal:1"
 
 # Specify cpu need (same for all jobs)
 cpu_per_task="1"
