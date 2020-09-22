@@ -175,6 +175,7 @@ class R0D1(DQN):
         if itr < self.min_itr_learn:
             return opt_info
 
+        # ==
         # For evaluation only: compute the delta to true value prediction
         true_sample_delta = self.compute_true_delta(samples)
         true_abs_delta = abs(true_sample_delta)
@@ -283,53 +284,15 @@ class R0D1(DQN):
              samples.all_reward.clone().detach()),
             device=self.agent.device)
 
-        # all_action = torch.zeros(all_action.size())
-        # all_reward = torch.zeros(all_reward.size())  # TODO make this a feature in future?
-
         # Extract action, reward and done on CPU
         action = samples.all_action[1:self.batch_T + 1]
         return_ = samples.return_[0:self.batch_T]  # "n-step" rewards, n=1
         done_n = samples.done_n[0:self.batch_T]
 
-        # ==
-        # Compute Q estimates (NOTE: no RNN warm-up)
-        agent_slice = slice(0, self.batch_T)
-        agent_inputs = AgentInputs(
-            observation=all_observation[agent_slice].clone().detach(),
-            prev_action=all_action[agent_slice].clone().detach(),
-            prev_reward=all_reward[agent_slice].clone().detach(),
-        )
-        target_slice = slice(0, None)  # Same start t as agent. (0 + bT + nsr)
-        target_inputs = AgentInputs(
-            observation=all_observation[target_slice],
-            prev_action=all_action[target_slice],
-            prev_reward=all_reward[target_slice],
-        )
-
-        # Init RNN state should be 0s / None either way
-        if self.store_rnn_state_interval == 0:
-            init_rnn_state = None
-        else:
-            # [B,N,H]-->[N,B,H] cudnn.
-            init_rnn_state = buffer_method(samples.init_rnn_state,
-                                           "transpose", 0, 1)
-            init_rnn_state = buffer_method(init_rnn_state,
-                                           "contiguous")
-        target_rnn_state = init_rnn_state  # NOTE: no RNN warmup for target
-
-        # Behavioural net Q estimate
-        qs, _ = self.agent(*agent_inputs, init_rnn_state)  # [T,B,A]
+        # Compute target and behavioural predictions
+        input_buffer = (all_observation, all_action, all_reward)
+        qs, target_q = self.compute_q_predictions(input_buffer)
         q = select_at_indexes(action, qs)
-        # Target network Q estimates
-        with torch.no_grad():
-            target_qs, _ = self.agent.target(*target_inputs, target_rnn_state)
-            if self.double_dqn:
-                next_qs, _ = self.agent(*target_inputs, init_rnn_state)
-                next_a = torch.argmax(next_qs, dim=-1)
-                target_q = select_at_indexes(next_a, target_qs)
-            else:
-                target_q = torch.max(target_qs, dim=-1).values
-            target_q = target_q[-self.batch_T:]  # Same length as q.
 
         # ==
         # Compute lambda return from valid sequence
@@ -382,6 +345,60 @@ class R0D1(DQN):
 
         return loss, info_dict
 
+    def compute_q_predictions(self, input_buffer):
+        """
+        Compute the behaviour and target network Q predictions
+        Note this is a separate method since I re-use the method during
+        training and also to evaluate progress on new sampled trajectories
+
+        :param input_buffer: observations, actions and reward of a trajectory
+        :return: behaviour qs (size [T, B, A]) and target_q (size [T, B])
+        """
+
+        # Unpack the RNN input buffer
+        all_observation, all_action, all_reward = input_buffer
+
+        # all_action = torch.zeros(all_action.size())
+        # all_reward = torch.zeros(all_reward.size())  # TODO make this a feature in future?
+
+        # ==
+        # Compute Q estimates (NOTE: no RNN warm-up)
+        agent_slice = slice(0, self.batch_T)
+        agent_inputs = AgentInputs(
+            observation=all_observation[agent_slice].clone().detach(),
+            prev_action=all_action[agent_slice].clone().detach(),
+            prev_reward=all_reward[agent_slice].clone().detach(),
+        )
+        target_slice = slice(0, None)  # Same start t as agent. (0 + bT + nsr)
+        target_inputs = AgentInputs(
+            observation=all_observation[target_slice],
+            prev_action=all_action[target_slice],
+            prev_reward=all_reward[target_slice],
+        )
+
+        # NOTE: always initialize to None; assume to always have full traj
+        # For how to sample rnn intermediate state from mid-run, see
+        # https://github.com/astooke/rlpyt/blob/f04f23db1eb7b5915d88401fca67869968a07a37
+        # /rlpyt/algos/dqn/r2d1.py#L280
+        init_rnn_state = None
+        target_rnn_state = None  # NOTE: no RNN warmup for target
+
+        # Behavioural net Q estimate
+        qs, _ = self.agent(*agent_inputs, init_rnn_state)  # [T,B,A]
+
+        # Target network Q estimates
+        with torch.no_grad():
+            target_qs, _ = self.agent.target(*target_inputs, target_rnn_state)
+            if self.double_dqn:
+                next_qs, _ = self.agent(*target_inputs, init_rnn_state)
+                next_a = torch.argmax(next_qs, dim=-1)
+                target_q = select_at_indexes(next_a, target_qs)
+            else:
+                target_q = torch.max(target_qs, dim=-1).values
+            target_q = target_q[-self.batch_T:]  # Same length as q.
+
+        return qs, target_q
+
     def compute_lambda_return(self, r_traj, v_traj, valid):
         """
         Compute the lambda return. Assumes valid gives the valid trajectory
@@ -425,28 +442,20 @@ class R0D1(DQN):
              samples.agent.prev_action.clone().detach(),
              samples.env.prev_reward.clone().detach()),
             device=self.agent.device)
+
         action = samples.agent.prev_action[1:self.batch_T + 1]
         done_n = samples.env.done[0:self.batch_T]
-
-        agent_slice = slice(0, self.batch_T)
-        agent_inputs = AgentInputs(
-            observation=all_observation[agent_slice].clone().detach(),
-            prev_action=all_action[agent_slice].clone().detach(),
-            prev_reward=all_reward[agent_slice].clone().detach(),
-        )
-
-        # Note: no RNN initial states (NOTE: might be a bug later if I
-        #       want to use partial trajectories)
-        init_rnn_state = None
-
-        # Estimate Q
-        with torch.no_grad():
-            qs, _ = self.agent(*agent_inputs, init_rnn_state)  # [T,B,A]
-            q = select_at_indexes(action, qs)
 
         # Valid length
         valid = valid_from_done(done_n)
         valid_T = int(torch.sum(valid))
+
+        # Get the behaviour Qs and target max q
+        input_buffer = (all_observation, all_action, all_reward)
+        qs, target_q = self.compute_q_predictions(input_buffer)
+
+        with torch.no_grad():
+            q = select_at_indexes(action, qs)
 
         # ==
         # Compute true return (highly specific to the delay action.py env)
