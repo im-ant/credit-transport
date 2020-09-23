@@ -135,6 +135,13 @@ class DelayedActionEnv(gym.Env):
                                      replace=False)
             cifar_indexes[k] = choice_imgs
 
+        # Manually shuffle the corridor class
+        rng = np.random.default_rng()
+        corri_img_shufIdxs = rng.choice(cifar_indexes['corridor'],
+                                        size=len(cifar_indexes['corridor']),
+                                        replace=False)
+        cifar_indexes['corridor'] = corri_img_shufIdxs
+
         # ==
         # Construct the data subset dictionary
         ds_dict = {}
@@ -327,8 +334,8 @@ class DelayedActionEnv(gym.Env):
         if self.fully_observable and (not((cur_stage == 1)
                                           and (cur_step == 0))):
             # NOTE: hacky, TODO in the future should use hashing
-            fulobs_idx = int(self.state[0] * 100 + self.state[1] * 10 +
-                             self.state[2])
+            state_tup_cp = (self.state[0], self.state[1], self.state[2])
+            fulobs_idx = self.state_tuple_2_idx(state_tup_cp)
             img = self.ds_dict['corridor'][fulobs_idx][0]
 
         # Construct info (for algo evaluation only)
@@ -339,6 +346,35 @@ class DelayedActionEnv(gym.Env):
         }
 
         return img, reward, done, info
+
+    def state_tuple_2_idx(self, tup):
+        """
+        Map a state 3-tuple to unique indeces, used when making the env
+        fully observable.
+        Assumes tup[0] in [0, 2], tup[1] in [1,2] and tup[2] is determined
+        by self.action_delay_len and self.reward_delay_len
+
+        :param tup: state 3-tuple
+        :param idx_range: range of indeces to map values to
+        :return: unique index
+        """
+
+        # Define cardinality of each tuple dimension, NOTE assumes the tuple
+        # value can only take on values {0, 1, ..., cardinality - 1}
+        max_delay = max(self.reward_delay_len, self.action_delay_len)
+        cardin_tup = (3, 3, (max_delay+2))
+
+        # Assert values are within range
+        for i in range(len(cardin_tup)):
+            assert tup[i] < cardin_tup[i]
+        # TODO: assert max value doesn't exceed max?
+
+        # Compute index
+        deci_idx = ((tup[0] * cardin_tup[1] * cardin_tup[2])
+                    + (tup[1] * cardin_tup[2])
+                    + tup[2])
+
+        return deci_idx
 
     def render(self):
         """
