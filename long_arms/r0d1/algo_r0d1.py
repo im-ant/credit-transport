@@ -14,22 +14,24 @@ from rlpyt.utils.tensor import select_at_indexes, valid_mean
 from rlpyt.algos.utils import valid_from_done, discount_return_n_step
 from rlpyt.utils.buffer import buffer_to, buffer_method, torchify_buffer
 
-# TODO: update this
-OptInfo = namedtuple("OptInfo", ["loss", "gradNorm",
-                                 "t1_q_min", "t1_q_max", "t2_q_min", "t2_q_max",
-                                 "t3_q_min", "t3_q_max", "tneg2_q_min", "tneg2_q_max",
-                                 "final_q_min", "final_q_max",
-                                 "t2_abs_delta", "final_abs_delta",
-                                 "t2_true_abs_delta", "t3_true_abs_delta",
-                                 "tneg2_true_abs_delta", "final_true_abs_delta",
-                                 "avg_true_abs_delta",
-                                 "t2_grad_bptt_norm", "t2_grad_curt_norm",
-                                 "tneg2_grad_bptt_norm", "tneg2_grad_curt_norm",
-                                 "final_grad_bptt_norm", "final_grad_curt_norm",
-                                 "avg_grad_bptt_norm", "avg_grad_curt_norm",
-                                 "t2_grad_cossim", "tneg2_grad_cossim",
-                                 "final_grad_cossim", "avg_grad_cossim",
-                                 "tdAbsErr", "priority"])
+OptInfo = namedtuple("OptInfo", ['loss', 'gradNorm',  # Overall loss
+                                 'tp0_q_min', 'tp0_q_max', # Max and min action-values
+                                 'tp1_q_min', 'tp1_q_max', 'tp2_q_min', 'tp2_q_max',
+                                 'tn2_q_min', 'tn2_q_max', 'tn1_q_min', 'tn1_q_max',
+                                 'tp1_abs_delta', 'tn1_abs_delta',  # Target - policy delta
+                                 'tp1_true_abs_predic_delta',  # Pol net prediction abs delta to true
+                                 'tp2_true_abs_predic_delta', 'tn2_true_abs_predic_delta',
+                                 'tn1_true_abs_predic_delta', 'avg_true_abs_predic_delta',
+                                 'tp1_true_target_delta',  # TD target delta to true
+                                 'tp2_true_target_delta', 'tn2_true_target_delta',
+                                 'tn1_true_target_delta', 'avg_true_target_delta',
+                                 'tp1_grad_curt_norm', 'tn2_grad_curt_norm',  # Current T grad norm
+                                 'tn1_grad_curt_norm', 'avg_grad_curt_norm',
+                                 'tp1_grad_bptt_norm', 'tn2_grad_bptt_norm',  # BPTT grad norm
+                                 'tn1_grad_bptt_norm', 'avg_grad_bptt_norm',
+                                 'tp1_grad_cossim', 'tn2_grad_cossim',  # Current & BPTT grad cosine sim
+                                 'tn1_grad_cossim', 'avg_grad_cossim',
+                                 ])
 
 SamplesToBufferRnn = namedarraytuple("SamplesToBufferRnn",
                                      SamplesToBuffer._fields + (
@@ -177,8 +179,10 @@ class R0D1(DQN):
 
         # ==
         # For evaluation only: compute the delta to true value prediction
-        true_sample_delta = self.compute_true_delta(samples)
-        true_abs_delta = abs(true_sample_delta)
+        true_sample_deltas = self.compute_true_delta(samples)
+        true_predic_delta, true_target_delta = true_sample_deltas
+
+        true_abs_predic_delta = abs(true_predic_delta)
 
         # ==
         # Train
@@ -222,21 +226,22 @@ class R0D1(DQN):
                 avg_cossim = torch.mean(cossim)
 
                 # Logging the gradient interference statistics
-                getattr(opt_info, "t2_grad_curt_norm").append(curT_grad_norms[1].item())
-                getattr(opt_info, "tneg2_grad_curt_norm").append(curT_grad_norms[-2].item())
-                getattr(opt_info, "final_grad_curt_norm").append(curT_grad_norms[-1].item())
+                getattr(opt_info, "tp1_grad_curt_norm").append(curT_grad_norms[1].item())
+                getattr(opt_info, "tn2_grad_curt_norm").append(curT_grad_norms[-2].item())
+                getattr(opt_info, "tn1_grad_curt_norm").append(curT_grad_norms[-1].item())
                 getattr(opt_info, "avg_grad_curt_norm").append(avg_curT_grad_norms.item())
 
-                getattr(opt_info, "t2_grad_bptt_norm").append(bptT_grad_norms[1].item())
-                getattr(opt_info, "tneg2_grad_bptt_norm").append(bptT_grad_norms[-2].item())
-                getattr(opt_info, "final_grad_bptt_norm").append(bptT_grad_norms[-1].item())
+                getattr(opt_info, "tp1_grad_bptt_norm").append(bptT_grad_norms[1].item())
+                getattr(opt_info, "tn2_grad_bptt_norm").append(bptT_grad_norms[-2].item())
+                getattr(opt_info, "tn1_grad_bptt_norm").append(bptT_grad_norms[-1].item())
                 getattr(opt_info, "avg_grad_bptt_norm").append(avg_bptT_grad_norms.item())
 
-                getattr(opt_info, "t2_grad_cossim").append(cossim[1].item())
-                getattr(opt_info, "tneg2_grad_cossim").append(cossim[-2].item())
-                getattr(opt_info, "final_grad_cossim").append(cossim[-1].item())
+                getattr(opt_info, "tp1_grad_cossim").append(cossim[1].item())
+                getattr(opt_info, "tn2_grad_cossim").append(cossim[-2].item())
+                getattr(opt_info, "tn1_grad_cossim").append(cossim[-1].item())
                 getattr(opt_info, "avg_grad_cossim").append(avg_cossim.item())
 
+            # ==
             # Logging information
             opt_info.loss.append(loss.item())
             opt_info.gradNorm.append(grad_norm.clone().detach().item())
@@ -247,12 +252,21 @@ class R0D1(DQN):
                 # Add to NamedTuple
                 getattr(opt_info, k).append(info_dict[k].item())
 
-            getattr(opt_info, "t2_true_abs_delta").append(true_abs_delta[1].item())
-            getattr(opt_info, "t3_true_abs_delta").append(true_abs_delta[2].item())
-            getattr(opt_info, "tneg2_true_abs_delta").append(true_abs_delta[-2].item())
-            getattr(opt_info, "final_true_abs_delta").append(true_abs_delta[-1].item())
-            getattr(opt_info, "avg_true_abs_delta").append(torch.mean(true_abs_delta).item())
+            # Log policy net prediciton to true prediction
+            getattr(opt_info, "tp1_true_abs_predic_delta").append(true_abs_predic_delta[1].item())
+            getattr(opt_info, "tp2_true_abs_predic_delta").append(true_abs_predic_delta[2].item())
+            getattr(opt_info, "tn2_true_abs_predic_delta").append(true_abs_predic_delta[-2].item())
+            getattr(opt_info, "tn1_true_abs_predic_delta").append(true_abs_predic_delta[-1].item())
+            getattr(opt_info, "avg_true_abs_predic_delta").append(torch.mean(true_abs_predic_delta).item())
 
+            # Log target net prediction
+            getattr(opt_info, "tp1_true_target_delta").append(true_target_delta[1].item())
+            getattr(opt_info, "tp2_true_target_delta").append(true_target_delta[2].item())
+            getattr(opt_info, "tn2_true_target_delta").append(true_target_delta[-2].item())
+            getattr(opt_info, "tn1_true_target_delta").append(true_target_delta[-1].item())
+            getattr(opt_info, "avg_true_target_delta").append(torch.mean(true_target_delta).item())
+
+            # ==
             # Update counter
             self.update_counter += 1
             if self.update_counter % self.target_update_interval == 0:
@@ -276,8 +290,6 @@ class R0D1(DQN):
         # Input for LSTM
         # NOTE both networks take the previous action and rewards as
         #            LSTM input. May want to set these to zero.
-        # TODO: set the reward and action to zero? or at least reawrd to zero
-        #
         all_observation, all_action, all_reward = buffer_to(
             (samples.all_observation.clone().detach(),
              samples.all_action.clone().detach(),
@@ -313,7 +325,7 @@ class R0D1(DQN):
 
         loss = valid_mean(losses, valid)
 
-        td_abs_errors = abs_delta.detach()
+        td_abs_errors = abs_delta.detach()  # NOTE: deprecated line?
         # NOTE: not computing prioritization
 
         # ==
@@ -324,22 +336,22 @@ class R0D1(DQN):
         qs_tensor = qs.clone().detach()  # [sample_T, sample_B, A]
         qs_tensor = qs_tensor[0:valid_t, :, :]  # [valid_t, sample_B, A]
 
-        info_dict['t1_q_min'] = torch.min(qs_tensor[0, 0, :])
-        info_dict['t1_q_max'] = torch.max(qs_tensor[0, 0, :])
-        info_dict['t2_q_min'] = torch.min(qs_tensor[1, 0, :])
-        info_dict['t2_q_max'] = torch.max(qs_tensor[1, 0, :])
-        info_dict['t3_q_min'] = torch.min(qs_tensor[2, 0, :])
-        info_dict['t3_q_max'] = torch.max(qs_tensor[2, 0, :])
-        info_dict['tneg2_q_min'] = torch.min(qs_tensor[-2, 0, :])
-        info_dict['tneg2_q_max'] = torch.max(qs_tensor[-2, 0, :])
-        info_dict['final_q_min'] = torch.min(qs_tensor[-1, 0, :])
-        info_dict['final_q_max'] = torch.max(qs_tensor[-1, 0, :])
+        info_dict['tp0_q_min'] = torch.min(qs_tensor[0, 0, :])
+        info_dict['tp0_q_max'] = torch.max(qs_tensor[0, 0, :])
+        info_dict['tp1_q_min'] = torch.min(qs_tensor[1, 0, :])
+        info_dict['tp1_q_max'] = torch.max(qs_tensor[1, 0, :])
+        info_dict['tp2_q_min'] = torch.min(qs_tensor[2, 0, :])
+        info_dict['tp2_q_max'] = torch.max(qs_tensor[2, 0, :])
+        info_dict['tn2_q_min'] = torch.min(qs_tensor[-2, 0, :])
+        info_dict['tn2_q_max'] = torch.max(qs_tensor[-2, 0, :])
+        info_dict['tn1_q_min'] = torch.min(qs_tensor[-1, 0, :])
+        info_dict['tn1_q_max'] = torch.max(qs_tensor[-1, 0, :])
         # Store the TD error (average over batch)
         delta_cp = delta.clone().detach()[0:valid_t]
         delta_tensor = torch.mean(delta_cp, dim=1)
         abs_delta_tensor = torch.mean(torch.abs(delta_cp), dim=1)
-        info_dict['t2_abs_delta'] = abs_delta_tensor[1]
-        info_dict['final_abs_delta'] = abs_delta_tensor[-1]
+        info_dict['tp1_abs_delta'] = abs_delta_tensor[1]
+        info_dict['tn1_abs_delta'] = abs_delta_tensor[-1]
         # All abs errors
         # info_dict['valid_td_abs_errors'] = td_abs_errors * valid
 
@@ -433,7 +445,8 @@ class R0D1(DQN):
         NOTE: if multiple trajectories are collected in a single sample,
               only the first trajectory will be used.
         :param samples: samples from environment sampler
-        :return: tensor of delta between true G and predicted Q
+        :return: tensor of delta between true G and predicted Q and target Q
+                 of shape (T, 1)  (T being the length of valid traj)
         """
 
         # Extract information to estimate Q
@@ -444,18 +457,22 @@ class R0D1(DQN):
             device=self.agent.device)
 
         action = samples.agent.prev_action[1:self.batch_T + 1]
+        return_ = samples.env.reward[0:self.batch_T]
         done_n = samples.env.done[0:self.batch_T]
+
+        # Get the behaviour Qs and target max q
+        input_buffer = (all_observation, all_action, all_reward)
+        with torch.no_grad():
+            qs, target_q = self.compute_q_predictions(input_buffer)
+            q = select_at_indexes(action, qs)
 
         # Valid length
         valid = valid_from_done(done_n)
         valid_T = int(torch.sum(valid))
 
-        # Get the behaviour Qs and target max q
-        input_buffer = (all_observation, all_action, all_reward)
-        qs, target_q = self.compute_q_predictions(input_buffer)
-
-        with torch.no_grad():
-            q = select_at_indexes(action, qs)
+        # lambda target
+        lambda_G = self.compute_lambda_return(return_, target_q,
+                                              valid)  # (T, 1)
 
         # ==
         # Compute true return (highly specific to the delay action.py env)
@@ -472,77 +489,14 @@ class R0D1(DQN):
 
         # ==
         # Compute delta to true value
-        true_delta = true_G - q[:valid_T]
+        predic_true_delta = true_G - q[:valid_T]
+        target_true_delta = true_G - lambda_G[:valid_T]
 
-        return true_delta
-
+        return predic_true_delta, target_true_delta
 
     # ==
     # Below is old code
     # ==
-
-    def compute_input_priorities(self, samples):
-        """Used when putting new samples into the replay buffer.  Computes
-        n-step TD-errors using recorded Q-values from online network and
-        value scaling.  Weights the max and the mean TD-error over each sequence
-        to make a single priority value for that sequence.
-
-        Note:
-            Although the original R2D2 implementation used the entire
-            80-step sequence to compute the input priorities, we ran R2D1 with 40
-            time-step sample batches, and so computed the priority for each
-            80-step training sequence based on one of the two 40-step halves.
-            Algorithm argument ``input_priority_shift`` determines which 40-step
-            half is used as the priority for the 80-step sequence.  (Since this
-            method might get executed by alternating memory copiers in async mode,
-            don't carry internal state here, do all computation with only the samples
-            available in input.  Could probably reduce to one memory copier and keep
-            state there, if needed.)
-        """
-
-        # """Just for first input into replay buffer.
-        # Simple 1-step return TD-errors using recorded Q-values from online
-        # network and value scaling, with the T dimension reduced away (same
-        # priority applied to all samples in this batch; whereever the rnn state
-        # is kept--hopefully the first step--this priority will apply there).
-        # The samples duration T might be less than the training segment, so
-        # this is an approximation of an approximation, but hopefully will
-        # capture the right behavior.
-        # UPDATE 20190826: Trying using n-step returns.  For now using samples
-        # with full n-step return available...later could also use partial
-        # returns for samples at end of batch.  35/40 ain't bad tho.
-        # Might not carry/use internal state here, because might get executed
-        # by alternating memory copiers in async mode; do all with only the
-        # samples avialable from input."""
-        samples = torchify_buffer(samples)
-        q = samples.agent.agent_info.q
-        action = samples.agent.action
-        q_max = torch.max(q, dim=-1).values
-        q_at_a = select_at_indexes(action, q)
-        return_n, done_n = discount_return_n_step(
-            reward=samples.env.reward,
-            done=samples.env.done,
-            n_step=self.n_step_return,
-            discount=self.discount,
-            do_truncated=False,  # Only samples with full n-step return.
-        )
-        # y = self.value_scale(
-        #     samples.env.reward[:-1] +
-        #     (self.discount * (1 - samples.env.done[:-1].float()) *  # probably done.float()
-        #         self.inv_value_scale(q_max[1:]))
-        # )
-        nm1 = max(1, self.n_step_return - 1)  # At least 1 bc don't have next Q.
-        y = self.value_scale(return_n +
-                             (1 - done_n.float()) * self.inv_value_scale(q_max[nm1:]))
-        delta = abs(q_at_a[:-nm1] - y)
-        # NOTE: by default, with R2D1, use squared-error loss, delta_clip=None.
-        if self.delta_clip is not None:  # Huber loss.
-            delta = torch.clamp(delta, 0, self.delta_clip)
-        valid = valid_from_done(samples.env.done[:-nm1])
-        max_d = torch.max(delta * valid, dim=0).values
-        mean_d = valid_mean(delta, valid, dim=0)  # Still high if less valid.
-        priorities = self.pri_eta * max_d + (1 - self.pri_eta) * mean_d  # [B]
-        return priorities.numpy()
 
     def value_scale(self, x):
         """Value scaling function to handle raw rewards across games (not clipped)."""
